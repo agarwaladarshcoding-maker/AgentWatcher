@@ -1,0 +1,22 @@
+# dependencies
+node_modules/
+
+# build output
+out/
+dist/
+
+# electron-builder output
+release/
+
+# logs
+*.log
+npm-debug.log*
+
+# editor / OS
+.DS_Store
+.vscode/
+.idea/
+
+# misc
+node_modules/.tmp/
+*.tsbuildinfo
