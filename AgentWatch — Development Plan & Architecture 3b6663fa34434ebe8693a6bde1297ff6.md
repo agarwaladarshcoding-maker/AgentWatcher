@@ -200,13 +200,14 @@ Each phase has a hard **exit criterion**. We do not start the next phase until t
 ### Phase 2 — Interpretation layer (the words)
 
 - Goal: structured state + event feed, derived without touching the mirror.
-    - [ ]  Tee + strip-ANSI rolling buffer
-    - [ ]  Pattern engine + AgentProfile structure
-    - [ ]  Generic profile + Gemini + Claude profiles
-    - [ ]  Header status dot/badge reflects current <code>AgentState</code>
-    - [ ]  Live event feed populates from real output
+    - [x]  Tee + strip-ANSI rolling buffer
+    - [x]  Pattern engine + AgentProfile structure
+    - [x]  Generic profile + Gemini + Claude profiles *(generic verified; Gemini/Claude are conservative starter patterns — tune against real transcripts per §21)*
+    - [x]  Header status dot/badge reflects current <code>AgentState</code>
+    - [x]  Live event feed populates from real output
+    - [x]  **Dual-mirror passthrough:** the same single PTY also drives the **native terminal** that launched <code>agentwatch</code> (output to both the native terminal and the GUI mirror; input usable from either), **agent-agnostic** and with **no second process / no double compute**. The native terminal is the size authority when attached; gracefully GUI-only when there is no controlling TTY (e.g. a packaged double-click launch).
     
-    **Exit criterion:** During a real session, state badge and event feed update sensibly while the mirror stays byte-perfect.
+    **Exit criterion:** During a real session, state badge and event feed update sensibly while the mirror stays byte-perfect, **and** the agent is simultaneously usable from both the native terminal and the GUI mirror with a single underlying process.
     
 
 ### Phase 3 — Permission control plane
@@ -521,6 +522,7 @@ These are the rules that protect the essence. Breaking any one of them breaks th
 - **Never put terminal output in React state.** xterm is mounted once via a ref; push `pty:data` straight into `term.write()`.
 - **No OS-level interception.** The agent's own prompt does the blocking; Allow/Deny only writes bytes to stdin. We never proxy, sandbox, or pause the process.
 - **One agent = one PID = one window.** We always own the spawn (see §4.4).
+- **One process, many mirrors.** The agent is spawned exactly **once** (one PTY, no double compute). Its single raw stream may be teed to multiple faithful sinks — the xterm GUI mirror **and** the native terminal that launched <code>agentwatch</code> — and may accept input from any of them. This passthrough is byte-level and **agent-agnostic**; never spawn the CLI twice to feed a second view.
 - **All main↔renderer traffic goes through the typed preload bridge (§22).** `contextIsolation: true`, `nodeIntegration: false`. Nothing else crosses.
 - **Profiles are heuristic and degrade gracefully.** A missing pattern means "fewer words," never a broken terminal.
 - **Phases are gated.** Do not start a phase until the prior exit criterion (§8) passes.

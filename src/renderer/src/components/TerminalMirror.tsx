@@ -2,31 +2,34 @@ import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import type { PtyExitInfo, PtyStartResult } from "../../../shared/ipc";
+import type {
+  PtyExitInfo,
+  PtyStartResult,
+  SizeAuthority,
+} from "../../../shared/ipc";
 
 interface TerminalMirrorProps {
-  /** Called with the pid once the PTY has spawned. */
   onStarted?: (result: PtyStartResult) => void;
-  /** Called once when the wrapped process exits. */
   onExit?: (info: PtyExitInfo) => void;
 }
 
 /**
- * The sacred mirror (architecture doc §4.1, §12, §18).
+ * The sacred GUI mirror (architecture doc §4.1, §12, §18).
  *
  * xterm.js is mounted ONCE into a ref and lives outside React's render cycle.
  * Raw `pty:data` bytes are written straight into the terminal — terminal output
- * never touches React state. Keystrokes flow back to the PTY stdin, and the
- * view size stays synced to the PTY via the fit addon + a ResizeObserver.
+ * never touches React state.
+ *
+ * Size authority (dual-mirror passthrough): when the native terminal is attached
+ * it owns the PTY size, so here we simply render at the PTY size reported via
+ * `onSize` and do NOT drive the PTY from our own fit. When there is no native
+ * terminal, the GUI mirror fits-to-window and drives the PTY size.
  */
 export function TerminalMirror({
   onStarted,
   onExit,
 }: TerminalMirrorProps): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null);
-
-  // Keep the latest callbacks in refs so the mount effect can run exactly once
-  // (mounting xterm once is an invariant) without going stale.
   const onStartedRef = useRef(onStarted);
   const onExitRef = useRef(onExit);
   onStartedRef.current = onStarted;
@@ -59,10 +62,12 @@ export function TerminalMirror({
     term.open(host);
     fit.fit();
 
+    // Default to mirror authority until startPty tells us otherwise.
+    let authority: SizeAuthority = "mirror";
+
     // 1) verbatim PTY bytes -> xterm, synchronously and unmodified.
     const offData = window.agentwatch.onData((chunk) => term.write(chunk));
 
-    // exit -> quietly annotate and notify the parent (no behavioral change).
     const offExit = window.agentwatch.onExit((info) => {
       const sig = info.signal ? `, signal ${info.signal}` : "";
       term.write(
@@ -71,25 +76,47 @@ export function TerminalMirror({
       onExitRef.current?.(info);
     });
 
-    // 2) keystrokes / paste -> PTY stdin (bidirectional).
+    // When the native terminal owns size, render at exactly the PTY size.
+    const offSize = window.agentwatch.onSize((size) => {
+      if (size.cols > 0 && size.rows > 0) {
+        try {
+          term.resize(size.cols, size.rows);
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+
+    // 2) keystrokes / paste -> PTY stdin (works alongside the native terminal).
     const inputSub = term.onData((data) => window.agentwatch.sendInput(data));
 
-    // Spawn the PTY at the fitted size so wrapping is correct from byte 0.
+    // Spawn the single PTY at the fitted size; main decides the size authority.
     window.agentwatch
       .startPty({ cols: term.cols, rows: term.rows })
-      .then((result) => onStartedRef.current?.(result))
+      .then((result) => {
+        authority = result.sizeAuthority;
+        if (authority === "native" && result.cols > 0 && result.rows > 0) {
+          try {
+            term.resize(result.cols, result.rows);
+          } catch {
+            /* ignore */
+          }
+        }
+        onStartedRef.current?.(result);
+      })
       .catch((error: unknown) => {
         term.write(
           `\r\n\x1b[31m[agentwatch] failed to start: ${String(error)}\x1b[0m\r\n`,
         );
       });
 
-    // Keep the PTY size in sync with the view.
+    // Container resize: only the mirror-authority case drives the PTY.
     const syncSize = (): void => {
+      if (authority !== "mirror") return;
       try {
         fit.fit();
       } catch {
-        // fit can throw if the host is briefly 0-sized during layout; ignore.
+        /* host may briefly be 0-sized during layout */
       }
       window.agentwatch.resize(term.cols, term.rows);
     };
@@ -102,6 +129,7 @@ export function TerminalMirror({
     return () => {
       offData();
       offExit();
+      offSize();
       inputSub.dispose();
       resizeObserver.disconnect();
       window.removeEventListener("resize", syncSize);

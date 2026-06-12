@@ -5,6 +5,8 @@ import {
   type PtySize,
   type PtyStartResult,
   type PtyExitInfo,
+  type AgentState,
+  type FeedEvent,
 } from "../shared/ipc";
 
 /**
@@ -46,13 +48,27 @@ const api = {
   sendInput(data: string): void {
     ipcRenderer.send(IPC.ptyInput, data);
   },
-  /** Keep the PTY size synced to the rendered terminal. */
+  /** Keep the PTY size synced to the rendered terminal (honored only when the mirror owns size). */
   resize(cols: number, rows: number): void {
     ipcRenderer.send(IPC.ptyResize, { cols, rows } satisfies PtySize);
+  },
+  /** Authoritative PTY size changed (e.g. the native terminal resized). */
+  onSize(callback: (size: PtySize) => void): () => void {
+    return subscribe<PtySize>(IPC.ptySize, callback);
   },
   /** Fires once when the wrapped process exits. */
   onExit(callback: (info: PtyExitInfo) => void): () => void {
     return subscribe<PtyExitInfo>(IPC.ptyExit, callback);
+  },
+
+  // --- the words ---
+  /** Current interpreted agent state. */
+  onState(callback: (state: AgentState) => void): () => void {
+    return subscribe<AgentState>(IPC.agentState, callback);
+  },
+  /** A new entry for the live event feed. */
+  onEvent(callback: (event: FeedEvent) => void): () => void {
+    return subscribe<FeedEvent>(IPC.feedEvent, callback);
   },
 };
 

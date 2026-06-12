@@ -11,15 +11,18 @@ locked plan.
 
 ## Status
 
-**Phase 1 — Faithful terminal mirror.** The wrapped command is spawned in a PTY
-(node-pty) and mirrored byte-for-byte in the UI via xterm.js: colors, spinners,
-and screen-clearing render verbatim, keystrokes/paste flow back to stdin, the
-view stays resize-synced to the PTY, and process exit is handled cleanly.
-Interpretation (the words), the permission control plane, and persistence arrive
-in Phases 2–4.
+**Phase 2 — Interpretation layer (the words) + dual-mirror passthrough.** On top
+of the faithful mirror, a tee'd ANSI-stripped copy of the stream feeds an
+interpreter that derives agent state (idle/reading/thinking/writing/waiting/done)
+and a live event feed via swappable regex **Agent Profiles** (generic + Gemini +
+Claude starters). The single PTY is also teed to the **native terminal** that
+launched `agentwatch`, so the agent is usable from both the native terminal and
+the GUI mirror at once — one process, no double compute, agent-agnostic. The
+permission control plane and persistence arrive in Phases 3–4.
 
-**Phase 1 exit criterion:** run `agentwatch gemini …` and the real agent session
-is fully usable inside AgentWatch with zero behavioral difference.
+**Phase 2 exit criterion:** during a real session the state badge + event feed
+update sensibly while the mirror stays byte-perfect, and the agent is usable
+from both the native terminal and the GUI mirror with one underlying process.
 
 ## Stack
 

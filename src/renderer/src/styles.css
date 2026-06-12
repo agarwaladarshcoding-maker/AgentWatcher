@@ -1,7 +1,7 @@
 /*
- * Phase 1 styling — the terminal is the hero (architecture doc §16.1). Calm
- * chrome, dark mirror, hairline borders. The full tokenized design system is
- * ported in Phase 4.
+ * Phase 2 styling — terminal is the hero, "the words" stay quiet (architecture
+ * doc §16). Split layout: mirror on the left, event feed on the right. The full
+ * tokenized design system is ported in Phase 4.
  */
 :root {
   --accent: #7f77dd;
@@ -12,11 +12,22 @@
   --text-2: #787774;
   --terminal-bg: #0f1117;
 
-  /* semantic state palette (§16.2) */
-  --state-green-dot: #1d9e75;
-  --state-green-bg: #e1f5ee;
-  --state-green-text: #0f6e56;
-  --state-neutral-dot: #b9b9b7;
+  /* semantic state palette (§16.2): bg / text / dot */
+  --blue-bg: #e6f1fb;
+  --blue-text: #185fa5;
+  --blue-dot: #378add;
+  --amber-bg: #faeeda;
+  --amber-text: #854f0b;
+  --amber-dot: #ef9f27;
+  --green-bg: #e1f5ee;
+  --green-text: #0f6e56;
+  --green-dot: #1d9e75;
+  --red-bg: #fcebeb;
+  --red-text: #a32d2d;
+  --red-dot: #e24b4a;
+  --neutral-bg: #f7f7f5;
+  --neutral-text: #787774;
+  --neutral-dot: #b9b9b7;
 
   font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 13px;
@@ -64,6 +75,16 @@ body,
   font-weight: 600;
 }
 
+.mirror-chip {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--accent);
+  background: #efeefb;
+  border: 0.5px solid #d8d5f5;
+  border-radius: 6px;
+  padding: 2px 7px;
+}
+
 .status-badge {
   margin-left: auto;
   font-size: 11px;
@@ -73,8 +94,8 @@ body,
 }
 
 .status-badge.live {
-  color: var(--state-green-text);
-  background: var(--state-green-bg);
+  color: var(--green-text);
+  background: var(--green-bg);
 }
 
 .status-badge.ended {
@@ -83,14 +104,35 @@ body,
   border: 0.5px solid var(--border);
 }
 
-/* ---- Stage / agent card ---- */
-.stage-terminal {
+/* ---- Split layout ---- */
+.layout {
   flex: 1 1 auto;
-  display: flex;
+  display: grid;
+  grid-template-columns: 1.55fr 0.95fr;
+  gap: 14px;
   padding: 14px;
   min-height: 0;
 }
 
+.left-col,
+.right-col {
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.right-col {
+  min-width: 320px;
+}
+
+@media (max-width: 1024px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---- Agent card (left) ---- */
 .agent-card {
   flex: 1 1 auto;
   display: flex;
@@ -112,21 +154,6 @@ body,
   flex: 0 0 auto;
 }
 
-.state-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--state-green-dot);
-}
-
-.state-dot.live {
-  animation: pulse 1.4s ease-in-out infinite;
-}
-
-.state-dot.idle {
-  background: var(--state-neutral-dot);
-}
-
 .agent-name {
   font-family: "JetBrains Mono", "SF Mono", "Cascadia Code", Menlo, Consolas,
     monospace;
@@ -140,23 +167,62 @@ body,
   color: var(--text-2);
 }
 
+/* state dot + pill share the semantic palette */
+.state-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--neutral-dot);
+}
+
 .state-pill {
   margin-left: auto;
   font-size: 10px;
   font-weight: 500;
   border-radius: 6px;
   padding: 2px 8px;
-}
-
-.state-pill.running {
-  color: var(--state-green-text);
-  background: var(--state-green-bg);
-}
-
-.state-pill.done {
-  color: var(--text-2);
-  background: var(--surface-2);
+  color: var(--neutral-text);
+  background: var(--neutral-bg);
   border: 0.5px solid var(--border);
+}
+
+.state-reading,
+.state-waiting {
+  /* dot */
+}
+.state-dot.state-reading,
+.state-dot.state-waiting {
+  background: var(--blue-dot);
+}
+.state-pill.state-reading,
+.state-pill.state-waiting {
+  color: var(--blue-text);
+  background: var(--blue-bg);
+  border-color: transparent;
+}
+
+.state-dot.state-thinking {
+  background: var(--amber-dot);
+}
+.state-pill.state-thinking {
+  color: var(--amber-text);
+  background: var(--amber-bg);
+  border-color: transparent;
+}
+
+.state-dot.state-writing,
+.state-dot.state-done {
+  background: var(--green-dot);
+}
+.state-pill.state-writing,
+.state-pill.state-done {
+  color: var(--green-text);
+  background: var(--green-bg);
+  border-color: transparent;
+}
+
+.state-dot.pulse {
+  animation: pulse 1.4s ease-in-out infinite;
 }
 
 /* ---- Terminal host (xterm mounts here) ---- */
@@ -167,9 +233,122 @@ body,
   padding: 8px 10px;
 }
 
-/* xterm fills its host */
 .terminal-host .xterm {
   height: 100%;
+}
+
+/* ---- Event feed (right) ---- */
+.feed-panel {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface-1);
+  border: 0.5px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  background: var(--surface-2);
+  border-bottom: 0.5px solid var(--border);
+}
+
+.panel-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.panel-live {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--green-text);
+  background: var(--green-bg);
+  border-radius: 6px;
+  padding: 2px 7px;
+}
+
+.feed-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+}
+
+.feed-empty {
+  color: var(--text-2);
+  text-align: center;
+  padding: 24px 0;
+  font-size: 12px;
+}
+
+.feed-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  animation: fadein 150ms ease-out;
+}
+
+.feed-item + .feed-item {
+  border-top: 0.5px solid var(--border);
+}
+
+.feed-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-top: 5px;
+  flex: 0 0 auto;
+  background: var(--neutral-dot);
+}
+
+.feed-dot.tone-blue {
+  background: var(--blue-dot);
+}
+.feed-dot.tone-amber {
+  background: var(--amber-dot);
+}
+.feed-dot.tone-green {
+  background: var(--green-dot);
+}
+.feed-dot.tone-warn {
+  background: var(--amber-dot);
+}
+.feed-dot.tone-neutral {
+  background: var(--neutral-dot);
+}
+
+.feed-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.feed-title {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.feed-detail {
+  font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.feed-time {
+  font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: var(--text-2);
+  flex: 0 0 auto;
 }
 
 @keyframes pulse {
@@ -179,5 +358,16 @@ body,
   }
   50% {
     opacity: 0.35;
+  }
+}
+
+@keyframes fadein {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }

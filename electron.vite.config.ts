@@ -12,7 +12,7 @@ import react from "@vitejs/plugin-react";
 // handles that from package.json dependencies.
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin({ exclude: ["strip-ansi"] })],
     build: {
       lib: {
         entry: resolve(__dirname, "src/main/index.ts"),
