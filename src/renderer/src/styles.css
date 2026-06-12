@@ -1,6 +1,7 @@
 /*
- * Phase 0 styling only — a calm placeholder using the doc's color tokens (§16.2).
- * The full tokenized design system is ported in Phase 4.
+ * Phase 1 styling — the terminal is the hero (architecture doc §16.1). Calm
+ * chrome, dark mirror, hairline borders. The full tokenized design system is
+ * ported in Phase 4.
  */
 :root {
   --accent: #7f77dd;
@@ -10,9 +11,12 @@
   --text-1: #191919;
   --text-2: #787774;
   --terminal-bg: #0f1117;
-  --output: #9fe1cb;
-  --dim: #555566;
-  --command: #c8c8d0;
+
+  /* semantic state palette (§16.2) */
+  --state-green-dot: #1d9e75;
+  --state-green-bg: #e1f5ee;
+  --state-green-text: #0f6e56;
+  --state-neutral-dot: #b9b9b7;
 
   font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 13px;
@@ -37,6 +41,7 @@ body,
   background: var(--surface-2);
 }
 
+/* ---- Topbar ---- */
 .topbar {
   display: flex;
   align-items: center;
@@ -45,6 +50,7 @@ body,
   height: 44px;
   background: var(--surface-1);
   border-bottom: 0.5px solid var(--border);
+  flex: 0 0 auto;
 }
 
 .logo-dot {
@@ -58,64 +64,120 @@ body,
   font-weight: 600;
 }
 
-.phase-badge {
+.status-badge {
   margin-left: auto;
   font-size: 11px;
   font-weight: 500;
+  border-radius: 6px;
+  padding: 3px 9px;
+}
+
+.status-badge.live {
+  color: var(--state-green-text);
+  background: var(--state-green-bg);
+}
+
+.status-badge.ended {
   color: var(--text-2);
   background: var(--surface-2);
   border: 0.5px solid var(--border);
-  border-radius: 6px;
-  padding: 3px 8px;
 }
 
-.stage {
-  flex: 1;
+/* ---- Stage / agent card ---- */
+.stage-terminal {
+  flex: 1 1 auto;
+  display: flex;
+  padding: 14px;
+  min-height: 0;
+}
+
+.agent-card {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  gap: 10px;
-  padding: 0 48px;
-  max-width: 720px;
-}
-
-.stage h1 {
-  font-size: 22px;
-  font-weight: 600;
-  margin: 0;
-}
-
-.sub {
-  color: var(--text-2);
-  line-height: 1.6;
-  margin: 0;
-}
-
-.launch-card {
-  margin-top: 14px;
-  width: 100%;
-  background: var(--terminal-bg);
+  min-height: 0;
+  background: var(--surface-1);
+  border: 0.5px solid var(--border);
   border-radius: 12px;
-  padding: 16px 18px;
+  overflow: hidden;
 }
 
-.launch-label {
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--dim);
-  margin-bottom: 8px;
+.agent-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border-bottom: 0.5px solid var(--border);
+  flex: 0 0 auto;
 }
 
-.launch-cmd {
+.state-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--state-green-dot);
+}
+
+.state-dot.live {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.state-dot.idle {
+  background: var(--state-neutral-dot);
+}
+
+.agent-name {
   font-family: "JetBrains Mono", "SF Mono", "Cascadia Code", Menlo, Consolas,
     monospace;
-  font-size: 13px;
-  color: var(--output);
+  font-size: 12px;
+  font-weight: 500;
 }
 
-.launch-cmd.dim {
-  color: var(--dim);
+.agent-pid {
+  font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.state-pill {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 500;
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+
+.state-pill.running {
+  color: var(--state-green-text);
+  background: var(--state-green-bg);
+}
+
+.state-pill.done {
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 0.5px solid var(--border);
+}
+
+/* ---- Terminal host (xterm mounts here) ---- */
+.terminal-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--terminal-bg);
+  padding: 8px 10px;
+}
+
+/* xterm fills its host */
+.terminal-host .xterm {
+  height: 100%;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }

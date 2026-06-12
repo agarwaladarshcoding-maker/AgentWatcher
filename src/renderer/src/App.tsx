@@ -1,14 +1,18 @@
 import { useEffect, useState } from "react";
 import type { LaunchInfo } from "../../main/launch";
+import type { PtyExitInfo, PtyStartResult } from "../../shared/ipc";
+import { TerminalMirror } from "./components/TerminalMirror";
 
 /**
- * Phase 0 renderer. Just enough to prove the window opens and the preload
- * bridge works: it asks main what command we were launched to watch and shows
- * it. The real dashboard (terminal mirror, event feed, notifications) is
- * built in Phases 1–4.
+ * Phase 1 renderer: the faithful terminal mirror is the hero. The topbar +
+ * agent header carry quiet metadata (command, pid, live/ended), but they never
+ * shout over the terminal. The event feed / notifications panel arrive in later
+ * phases.
  */
 function App(): JSX.Element {
   const [info, setInfo] = useState<LaunchInfo | null>(null);
+  const [pid, setPid] = useState<number | null>(null);
+  const [exit, setExit] = useState<PtyExitInfo | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -26,33 +30,40 @@ function App(): JSX.Element {
   }, []);
 
   const command =
-    info && info.command ? [info.command, ...info.args].join(" ") : null;
+    info && info.command ? [info.command, ...info.args].join(" ") : "shell";
+  const running = exit === null;
+
+  const handleStarted = (result: PtyStartResult): void => {
+    setPid(result.pid >= 0 ? result.pid : null);
+  };
 
   return (
     <div className="shell">
       <header className="topbar">
         <span className="logo-dot" aria-hidden="true" />
         <span className="app-name">AgentWatch</span>
-        <span className="phase-badge">Phase 0 · scaffold</span>
+        <span
+          className={`status-badge ${running ? "live" : "ended"}`}
+          role="status"
+        >
+          {running ? "Watching" : "Session ended"}
+        </span>
       </header>
 
-      <main className="stage">
-        <h1>The window opens.</h1>
-        <p className="sub">
-          The real terminal already exists — AgentWatch will mirror it 1:1 and
-          add the words on top. None of that is wired yet; this is the empty
-          shell.
-        </p>
-
-        <section className="launch-card">
-          <div className="launch-label">Launched to watch</div>
-          {command ? (
-            <code className="launch-cmd">$ {command}</code>
-          ) : (
-            <code className="launch-cmd dim">
-              (no command — started directly, not via the agentwatch launcher)
-            </code>
-          )}
+      <main className="stage-terminal">
+        <section className="agent-card">
+          <div className="agent-header">
+            <span
+              className={`state-dot ${running ? "live" : "idle"}`}
+              aria-hidden="true"
+            />
+            <span className="agent-name">{command}</span>
+            {pid !== null && <span className="agent-pid">pid {pid}</span>}
+            <span className={`state-pill ${running ? "running" : "done"}`}>
+              {running ? "Live" : exit?.code === 0 ? "Done" : "Exited"}
+            </span>
+          </div>
+          <TerminalMirror onStarted={handleStarted} onExit={setExit} />
         </section>
       </main>
     </div>

@@ -11,10 +11,15 @@ locked plan.
 
 ## Status
 
-**Phase 0 — Scaffolding.** Runnable empty Electron app + the `agentwatch`
-launcher. No PTY, no mirror, no interpretation yet.
+**Phase 1 — Faithful terminal mirror.** The wrapped command is spawned in a PTY
+(node-pty) and mirrored byte-for-byte in the UI via xterm.js: colors, spinners,
+and screen-clearing render verbatim, keystrokes/paste flow back to stdin, the
+view stays resize-synced to the PTY, and process exit is handled cleanly.
+Interpretation (the words), the permission control plane, and persistence arrive
+in Phases 2–4.
 
-**Phase 0 exit criterion:** `agentwatch echo hello` opens the AgentWatch window.
+**Phase 1 exit criterion:** run `agentwatch gemini …` and the real agent session
+is fully usable inside AgentWatch with zero behavioral difference.
 
 ## Stack
 
@@ -48,24 +53,23 @@ npm run dev          # electron-vite dev server with HMR (opens the window direc
 | `npm run rebuild`   | Rebuild native modules (node-pty, better-sqlite3) against Electron.|
 | `npm run package`   | Build + produce platform installers via electron-builder.          |
 
-## The `agentwatch` launcher (Phase 0 smoke test)
+## The `agentwatch` launcher
 
 The `agentwatch <command>` CLI boots the app and hands the wrapped command to
-the main process. To use it against the **built** app:
+the main process, which spawns it inside a PTY and mirrors it. To use it against
+the **built** app:
 
 ```bash
 npm run build        # produce out/main/index.js
 npm link             # expose the `agentwatch` bin on your PATH
 
-agentwatch echo hello   # ✅ Phase 0 exit criterion: the window opens
+agentwatch echo hello    # opens the window (Phase 0 smoke test)
+agentwatch gemini        # wrap an interactive agent — fully usable mirror
 ```
 
-The window shows the command it was launched to watch. In Phase 0 the main
-process only logs that command (`[agentwatch] launch command: echo hello`) — it
-does not spawn a PTY yet. That arrives in Phase 1.
-
 > During day-to-day development you can skip the launcher and just run
-> `npm run dev`, which opens the window directly (no wrapped command).
+> `npm run dev`. With no wrapped command, AgentWatch mirrors your default shell
+> so the terminal is still usable for testing.
 
 ## Project layout
 
@@ -74,14 +78,18 @@ agentwatch/
 ├─ bin/agentwatch.js            # the `agentwatch <cmd>` CLI launcher
 ├─ electron.vite.config.ts      # electron-vite: main / preload / renderer
 ├─ src/
+│  ├─ shared/ipc.ts             # IPC channel names + payload types (no deps)
 │  ├─ main/                     # Electron main process (Node)
-│  │  ├─ index.ts               # app lifecycle, window creation
-│  │  └─ launch.ts              # parse the wrapped command from the launcher
+│  │  ├─ index.ts               # app lifecycle, window creation, IPC wiring
+│  │  ├─ launch.ts              # parse the wrapped command from the launcher
+│  │  └─ pty/ptyManager.ts      # node-pty wrapper: spawn, data, input, resize, exit
 │  ├─ preload/                  # contextBridge: the only main<->renderer surface
 │  │  ├─ index.ts
 │  │  └─ index.d.ts
 │  └─ renderer/                 # React UI
 │     ├─ index.html
-│     └─ src/{main.tsx, App.tsx, styles.css}
+│     └─ src/
+│        ├─ {main.tsx, App.tsx, styles.css}
+│        └─ components/TerminalMirror.tsx   # xterm.js host (mounted once via ref)
 └─ resources/                   # icons, packaged assets (added later)
 ```

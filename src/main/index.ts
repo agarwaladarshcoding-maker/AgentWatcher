@@ -1,13 +1,24 @@
 import { join } from "node:path";
 import { app, shell, BrowserWindow, ipcMain } from "electron";
-import { readLaunchInfo, formatCommand, type LaunchInfo } from "./launch";
+import {
+  readLaunchInfo,
+  formatCommand,
+  resolveCommand,
+  type LaunchInfo,
+} from "./launch";
+import { PtyManager } from "./pty/ptyManager";
+import { IPC, type PtySize, type PtyStartResult } from "../shared/ipc";
 
 // The wrapped command the user asked us to watch (from the `agentwatch` launcher).
-// Phase 0: we only read + log it. PTY spawning arrives in Phase 1.
 const launchInfo: LaunchInfo = readLaunchInfo();
 
+// v1 is single-agent: one window, one PTY (architecture §1, §4.4). The model is
+// window-per-agent ready, but we keep a single current pair for now.
+let mainWindow: BrowserWindow | null = null;
+let ptyManager: PtyManager | null = null;
+
 function createWindow(): void {
-  const mainWindow = new BrowserWindow({
+  const win = new BrowserWindow({
     width: 1180,
     height: 760,
     minWidth: 900,
@@ -24,41 +35,86 @@ function createWindow(): void {
       nodeIntegration: false,
     },
   });
+  mainWindow = win;
 
-  mainWindow.on("ready-to-show", () => {
-    mainWindow.show();
+  // One PTY manager per window. Forward its verbatim output + exit straight to
+  // this window's renderer. The mirror is sacred: bytes pass through untouched.
+  const manager = new PtyManager();
+  ptyManager = manager;
+
+  manager.onData((chunk) => {
+    if (!win.isDestroyed()) win.webContents.send(IPC.ptyData, chunk);
+  });
+  manager.onExit((info) => {
+    if (!win.isDestroyed()) win.webContents.send(IPC.ptyExit, info);
+    console.log(`[agentwatch] session ended (code ${info.code})`);
+  });
+
+  win.on("ready-to-show", () => win.show());
+
+  // Closing the window ends the session — forward the kill to the PTY (§4.4).
+  win.on("closed", () => {
+    manager.kill();
+    if (ptyManager === manager) ptyManager = null;
+    if (mainWindow === win) mainWindow = null;
   });
 
   // Open external links in the user's browser, never in-app.
-  mainWindow.webContents.setWindowOpenHandler((details) => {
+  win.webContents.setWindowOpenHandler((details) => {
     void shell.openExternal(details.url);
     return { action: "deny" };
   });
 
   // electron-vite sets ELECTRON_RENDERER_URL in dev for HMR; load the file in prod.
   if (process.env.ELECTRON_RENDERER_URL) {
-    void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
+    void win.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
-    void mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
+    void win.loadFile(join(__dirname, "../renderer/index.html"));
   }
 }
 
 app.whenReady().then(() => {
-  // Phase 0 exit criterion lives here: the window opens for `agentwatch echo hello`.
   console.log(`[agentwatch] launch command: ${formatCommand(launchInfo)}`);
   console.log(`[agentwatch] cwd: ${launchInfo.cwd}`);
 
-  // The only IPC surface for Phase 0: let the renderer ask what we were launched
-  // to watch. All main<->renderer traffic crosses through the preload bridge.
-  ipcMain.handle("app:getLaunchInfo", () => launchInfo);
+  // ---- IPC contract (architecture §11). All traffic crosses the preload bridge.
+
+  // renderer asks what we were launched to watch.
+  ipcMain.handle(IPC.appGetLaunchInfo, () => launchInfo);
+
+  // renderer requests the PTY spawn once xterm has mounted + fitted, passing the
+  // initial size so line-wrapping is correct from the very first byte.
+  ipcMain.handle(IPC.ptyStart, (_event, size: PtySize): PtyStartResult => {
+    if (!ptyManager) return { pid: -1 };
+    const { command, args } = resolveCommand(launchInfo);
+    const pid = ptyManager.start({
+      command,
+      args,
+      cwd: launchInfo.cwd,
+      cols: size?.cols ?? 80,
+      rows: size?.rows ?? 30,
+    });
+    console.log(`[agentwatch] spawned pid ${pid}: ${command} ${args.join(" ")}`.trim());
+    return { pid };
+  });
+
+  // renderer -> PTY stdin (keystrokes / paste).
+  ipcMain.on(IPC.ptyInput, (_event, data: string) => ptyManager?.write(data));
+
+  // renderer view resized -> resize the PTY.
+  ipcMain.on(IPC.ptyResize, (_event, size: PtySize) =>
+    ptyManager?.resize(size.cols, size.rows),
+  );
 
   createWindow();
 
   app.on("activate", () => {
-    // macOS: re-create a window when the dock icon is clicked and none are open.
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
+
+// Make sure the child dies with the app.
+app.on("before-quit", () => ptyManager?.kill());
 
 // Quit when all windows are closed, except on macOS.
 app.on("window-all-closed", () => {

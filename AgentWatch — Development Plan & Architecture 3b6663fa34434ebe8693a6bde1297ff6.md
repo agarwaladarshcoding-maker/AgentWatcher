@@ -188,11 +188,11 @@ Each phase has a hard **exit criterion**. We do not start the next phase until t
 ### Phase 1 — Faithful terminal mirror (the heart)
 
 - Goal: the mirrored terminal is indistinguishable from running the command directly.
-    - [ ]  PTY manager spawns the wrapped command, streams output to renderer
-    - [ ]  xterm.js renders verbatim; colors, spinners, clearing all correct
-    - [ ]  Keystrokes + paste flow back to PTY stdin (bidirectional)
-    - [ ]  Window resize → PTY resize
-    - [ ]  Clean exit / process-end handling
+    - [x]  PTY manager spawns the wrapped command, streams output to renderer
+    - [x]  xterm.js renders verbatim; colors, spinners, clearing all correct
+    - [x]  Keystrokes + paste flow back to PTY stdin (bidirectional)
+    - [x]  Window resize → PTY resize
+    - [x]  Clean exit / process-end handling
     
     **Exit criterion:** Run <code>agentwatch gemini …</code> and a real agent session is fully usable inside AgentWatch with zero behavioral difference.
     

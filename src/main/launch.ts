@@ -39,3 +39,19 @@ export function formatCommand(info: LaunchInfo): string {
   if (!info.command) return "(no command — started directly)";
   return [info.command, ...info.args].join(" ");
 }
+
+/**
+ * Resolve the actual command to spawn in the PTY.
+ *
+ * Normally this is exactly what the user wrapped (`agentwatch gemini`). When the
+ * app is started directly without a wrapped command (e.g. `npm run dev`), we
+ * fall back to an interactive shell so the mirror is still usable for testing.
+ */
+export function resolveCommand(info: LaunchInfo): { command: string; args: string[] } {
+  if (info.command) return { command: info.command, args: info.args };
+
+  if (process.platform === "win32") {
+    return { command: process.env.COMSPEC || "powershell.exe", args: [] };
+  }
+  return { command: process.env.SHELL || "bash", args: [] };
+}
