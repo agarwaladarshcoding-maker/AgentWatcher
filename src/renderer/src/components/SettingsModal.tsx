@@ -51,6 +51,22 @@ export function SettingsModal({
         <label className="field-toggle">
           <input
             type="checkbox"
+            checked={settings.notifyOnComplete}
+            disabled={!settings.notifications}
+            onChange={(e) => update({ notifyOnComplete: e.target.checked })}
+          />
+          Also notify me when an agent finishes
+        </label>
+        <p className="field-hint">
+          A “✓ finished” toast when a session ends — handy when you launched it
+          with <code>--nodashboard</code> and are working elsewhere.
+        </p>
+      </div>
+
+      <div className="field">
+        <label className="field-toggle">
+          <input
+            type="checkbox"
             checked={settings.sound}
             onChange={(e) => update({ sound: e.target.checked })}
           />

@@ -144,6 +144,14 @@ const api = {
   sendDebugTestNotification(): void {
     ipcRenderer.send(IPC.debugTestNotification);
   },
+
+  // --- lifecycle / dialogs ---
+  appReady(): Promise<{ ready: boolean; nodashboard: boolean; home: string }> {
+    return ipcRenderer.invoke(IPC.appReady);
+  },
+  pickDirectory(current?: string): Promise<string | null> {
+    return ipcRenderer.invoke(IPC.dialogPickDirectory, current);
+  },
 };
 
 export type AgentWatchApi = typeof api;

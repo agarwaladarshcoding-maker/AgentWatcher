@@ -12,7 +12,7 @@
  */
 
 const FrameType = {
-  CREATE: 1, // client -> server : JSON { command, args, cwd, cols, rows }
+  CREATE: 1, // client -> server : JSON { command, args, cwd, cols, rows, dashboard }
   INPUT: 2, //  client -> server : raw stdin bytes
   RESIZE: 3, // client -> server : JSON { cols, rows }
   OUTPUT: 4, // server -> client : raw PTY output bytes

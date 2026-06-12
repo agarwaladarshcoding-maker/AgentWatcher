@@ -29,6 +29,9 @@ export interface FeedEvent {
   detail?: string;
 }
 
+/** Where a session was launched from: a native terminal relay, or the GUI itself. */
+export type SessionOrigin = "native" | "gui";
+
 /** A running (or finished) agent session — one PTY, one PID. */
 export interface SessionInfo {
   id: string;
@@ -44,6 +47,10 @@ export interface SessionInfo {
   ended: boolean;
   /** True while a native terminal relay is attached to this session. */
   nativeAttached: boolean;
+  /** The working directory the session was spawned in (so it is trackable). */
+  cwd: string;
+  /** Whether this session was started from a native terminal or the GUI. */
+  origin: SessionOrigin;
 }
 
 /**
@@ -116,8 +123,10 @@ export type PermissionAction =
 
 /** User-tunable app settings (persisted in the renderer, mirrored to main). */
 export interface AppSettings {
-  /** Show OS notifications when a permission lands. */
+  /** Show OS notifications when a permission lands (the agent is waiting). */
   notifications: boolean;
+  /** Also notify when an agent finishes / a session ends (a "completed" toast). */
+  notifyOnComplete: boolean;
   /** Play a soft chime when a permission lands. */
   sound: boolean;
   /** Override what Allow writes to stdin (empty = use the agent profile's). */
@@ -128,6 +137,7 @@ export interface AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   notifications: true,
+  notifyOnComplete: true,
   sound: true,
   allowInput: "",
   denyInput: "",

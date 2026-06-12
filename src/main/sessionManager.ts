@@ -61,6 +61,13 @@ export class SessionManager {
   private readonly sessions = new Map<string, Session>();
   private seq = 0;
   private settings: AppSettings = { ...DEFAULT_SETTINGS };
+  /**
+   * The viewer whose size wins when present (e.g. "gui" while the dashboard
+   * window is focused). When null we fall back to the MIN across all viewers.
+   * This fixes agents (gemini) rendering cramped in a big GUI just because a
+   * small native terminal relay is also attached.
+   */
+  private sizeAuthority: string | null = null;
 
   /**
    * Optional durable audit log (Phase 4). Best-effort: every call is guarded
@@ -139,6 +146,8 @@ export class SessionManager {
       startedAt: Date.now(),
       ended: false,
       nativeAttached,
+      cwd: opts.cwd,
+      origin: nativeAttached ? "native" : "gui",
     };
 
     const viewers = new Map<string, { cols: number; rows: number }>();
@@ -306,7 +315,29 @@ export class SessionManager {
     for (const s of this.sessions.values()) s.pty.kill();
   }
 
+  /**
+   * Set the viewer whose size is authoritative (e.g. "gui" when the dashboard
+   * is focused), or null to fall back to MIN across viewers. Renegotiates every
+   * live session so the change takes effect immediately.
+   */
+  setSizeAuthority(viewerId: string | null): void {
+    if (this.sizeAuthority === viewerId) return;
+    this.sizeAuthority = viewerId;
+    for (const s of this.sessions.values()) {
+      if (s.viewers.size > 0) this.applySize(s);
+    }
+  }
+
   private negotiate(s: Session): { cols: number; rows: number } {
+    // If an authoritative viewer is present for this session, it drives the
+    // size outright — so the focused GUI uses its full width even when a small
+    // native terminal is also mirroring the agent.
+    if (this.sizeAuthority) {
+      const authoritative = s.viewers.get(this.sizeAuthority);
+      if (authoritative && authoritative.cols > 0 && authoritative.rows > 0) {
+        return { cols: authoritative.cols, rows: authoritative.rows };
+      }
+    }
     let cols = Infinity;
     let rows = Infinity;
     for (const v of s.viewers.values()) {

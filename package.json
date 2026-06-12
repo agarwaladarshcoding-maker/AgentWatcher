@@ -49,6 +49,8 @@
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "selfcheck": "node scripts/selfcheck.mjs",
+    "notif-test": "node scripts/notif-test.mjs",
+    "verify": "npm run selfcheck && npm run notif-test",
     "rebuild": "electron-rebuild -f -w node-pty,better-sqlite3",
     "package": "npm run build && electron-builder",
     "postinstall": "electron-builder install-app-deps"

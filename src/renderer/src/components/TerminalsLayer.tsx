@@ -35,15 +35,34 @@ export function TerminalsLayer({
   }, [sessions, manager]);
 
   // On activation (or session-set change), fit the active terminal, report the
-  // GUI size, and focus it.
+  // GUI size, and focus it. We fit across a couple of animation frames because
+  // the host may not have its final size on the first paint (which is what made
+  // agents render cramped / not use the full width).
   useEffect(() => {
     if (!activeId) return;
-    const size = manager.fit(activeId);
-    if (size) onGuiSize(activeId, size.cols, size.rows);
+    let raf1 = 0;
+    let raf2 = 0;
+    let timer = 0;
+    const doFit = (): void => {
+      const size = manager.fit(activeId);
+      if (size) onGuiSize(activeId, size.cols, size.rows);
+    };
+    raf1 = requestAnimationFrame(() => {
+      doFit();
+      raf2 = requestAnimationFrame(doFit);
+      timer = window.setTimeout(doFit, 80);
+    });
     manager.focus(activeId);
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+      window.clearTimeout(timer);
+    };
   }, [activeId, sessions.length, manager, onGuiSize]);
 
-  // Keep the active terminal fitted to the window / panel.
+  // Keep the active terminal fitted to the window / panel. Refit on window
+  // resize, on container resize, and when the window regains focus (the GUI
+  // becomes the PTY size authority again on focus).
   useEffect(() => {
     if (!activeId) return;
     const refit = (): void => {
@@ -51,11 +70,13 @@ export function TerminalsLayer({
       if (size) onGuiSize(activeId, size.cols, size.rows);
     };
     window.addEventListener("resize", refit);
+    window.addEventListener("focus", refit);
     const host = hosts.current.get(activeId);
     const ro = host ? new ResizeObserver(() => refit()) : null;
     if (host && ro) ro.observe(host);
     return () => {
       window.removeEventListener("resize", refit);
+      window.removeEventListener("focus", refit);
       ro?.disconnect();
     };
   }, [activeId, manager, onGuiSize]);

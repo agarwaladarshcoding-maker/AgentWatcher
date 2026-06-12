@@ -105,19 +105,35 @@ export function NewTerminalModal({
         <label className="field-label" htmlFor="nt-cwd">
           Working directory (optional)
         </label>
-        <input
-          id="nt-cwd"
-          className="field-input"
-          value={cwd}
-          placeholder="defaults to your home directory"
-          onChange={(e) => setCwd(e.target.value)}
-        />
+        <div className="cwd-row">
+          <input
+            id="nt-cwd"
+            className="field-input"
+            value={cwd}
+            placeholder="defaults to your home directory"
+            onChange={(e) => setCwd(e.target.value)}
+          />
+          <button
+            className="btn"
+            type="button"
+            onClick={async () => {
+              const picked = await window.agentwatch.pickDirectory(
+                cwd.trim() || undefined,
+              );
+              if (picked) setCwd(picked);
+            }}
+          >
+            Browse…
+          </button>
+        </div>
       </div>
 
       {error && <p className="field-hint confirm-warn">{error}</p>}
       <p className="field-hint">
-        It opens here and behaves exactly like a native terminal — fully
-        interactive, mirrored, and annotated.
+        It opens here in AgentWatch — added to the Agents sidebar on the left and
+        tagged <strong>GUI</strong> so you can always find it — and behaves
+        exactly like a native terminal: fully interactive, mirrored, and
+        annotated.
       </p>
     </Modal>
   );

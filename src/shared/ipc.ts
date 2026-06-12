@@ -67,6 +67,11 @@ export const IPC = {
 
   /** renderer -> main (event): trigger a fake notification for testing. */
   debugTestNotification: "debug:test-notification",
+
+  /** renderer -> main (invoke): resolves once the main process is fully ready. */
+  appReady: "app:ready",
+  /** renderer -> main (invoke): open a native folder picker; returns a path or null. */
+  dialogPickDirectory: "dialog:pick-directory",
 } as const;
 
 /** Terminal dimensions in character cells. */

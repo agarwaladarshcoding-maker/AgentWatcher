@@ -183,8 +183,17 @@ function read(rel) {
   return reads[rel];
 }
 assert(
-  read("src/main/notifications.ts").includes("this.active.has(key)"),
+  read("src/main/notifications.ts").includes("this.active.has(tag)"),
   "notifications: dedupe guard present",
+);
+assert(
+  read("src/main/notifications.ts").includes("notifyCompleted"),
+  "notifications: completion ('finished') toast present",
+);
+assert(
+  /this\.active\.get\(tag\)/.test(read("src/main/notifications.ts")) &&
+    read("src/main/notifications.ts").includes("Replace any live toast"),
+  "notifications: similar-type grouping (replace-by-tag) present",
 );
 assert(
   /flashAttention/.test(read("src/main/notifications.ts")) &&
@@ -196,8 +205,45 @@ assert(
   "notifications: auto-close on resolve/respond",
 );
 assert(
+  read("src/main/index.ts").includes("notifyCompleted(") &&
+    read("src/main/index.ts").includes("onExit:"),
+  "notifications: completion toast fired on session exit",
+);
+assert(
   read("src/main/pty/ptyManager.ts").includes("resolveLoginPath"),
   "new terminal: login PATH resolution present",
+);
+assert(
+  read("src/main/sessionManager.ts").includes("setSizeAuthority") &&
+    read("src/main/index.ts").includes('setSizeAuthority("gui")'),
+  "terminal sizing: GUI focus drives PTY size (fixes cramped agent)",
+);
+assert(
+  read("bin/agentwatch.js").includes("--nodashboard") &&
+    read("src/main/index.ts").includes("AGENTWATCH_NO_DASHBOARD"),
+  "--nodashboard: flag parsed + headless boot honored",
+);
+assert(
+  read("src/main/ipcServer.ts").includes("onEnsureWindow") &&
+    read("src/shared/protocol.ts").includes("dashboard?: boolean"),
+  "--nodashboard: window opens on demand when a relay wants the dashboard",
+);
+assert(
+  read("src/shared/ipc.ts").includes("app:ready") &&
+    read("src/renderer/src/App.tsx").includes("boot-overlay"),
+  "load screen: appReady gate + boot overlay present",
+);
+assert(
+  read("src/shared/ipc.ts").includes("dialog:pick-directory") &&
+    read("src/renderer/src/components/NewTerminalModal.tsx").includes(
+      "pickDirectory",
+    ),
+  "new terminal: working-directory picker present",
+);
+assert(
+  read("src/shared/types.ts").includes("cwd: string") &&
+    read("src/renderer/src/App.tsx").includes("agent-cwd"),
+  "tracking: session cwd recorded + shown in the header",
 );
 assert(
   read("src/main/store/db.ts").includes("user_version") &&
@@ -206,7 +252,9 @@ assert(
 );
 assert(
   read("src/renderer/src/styles.css").includes("color-scheme: dark") &&
-    read("src/renderer/src/styles.css").includes("xterm-viewport::-webkit-scrollbar"),
+    read("src/renderer/src/styles.css").includes(
+      "xterm-viewport::-webkit-scrollbar",
+    ),
   "theme: dark tokens + terminal scrollbar styling present",
 );
 assert(
@@ -222,3 +270,7 @@ if (failed > 0) {
   process.exit(1);
 }
 console.log("All checks passed \u2713");
+console.log(
+  "\nTip: `npm run notif-test` drives the REAL notification system end-to-end,\n" +
+    "and `npm run verify` runs this plus that in one go.",
+);

@@ -34,6 +34,21 @@ const pendingKeys = new Set<string>();
 app.setName("AgentWatch");
 if (process.platform === "win32") app.setAppUserModelId("com.agentwatch.app");
 
+// The notification self-test runs in full isolation (its own userData dir, no
+// socket server) so it can never disturb a real running primary.
+if (process.env.AGENTWATCH_SELFTEST === "1") {
+  try {
+    const os = require("node:os");
+    const p = require("node:path").join(
+      os.tmpdir(),
+      `agentwatch-selftest-${process.pid}`,
+    );
+    app.setPath("userData", p);
+  } catch {
+    /* fall back to default userData */
+  }
+}
+
 /** Reflect the pending count on the dock/taskbar badge; clear flash when empty. */
 function updateAttentionBadge(): void {
   try {
@@ -122,6 +137,14 @@ function focusSession(sessionId: string): void {
     }
     mainWindow.flashFrame(false);
     sendToRenderer(IPC.sessionFocus, sessionId);
+    return;
+  }
+  // --nodashboard mode: there is no window. Bring the app's space forward so the
+  // user can return to their native terminal where the agent is running.
+  try {
+    app.focus({ steal: true });
+  } catch {
+    /* best-effort */
   }
 }
 
@@ -147,7 +170,15 @@ function createWindow(): void {
   win.on("ready-to-show", () => win.show());
   win.on("closed", () => {
     if (mainWindow === win) mainWindow = null;
+    // The GUI is gone; let native terminals drive PTY size again.
+    sessionManager?.setSizeAuthority(null);
   });
+
+  // While the dashboard is focused it OWNS the PTY size, so agents use the full
+  // GUI width even when a small native terminal is also mirroring them. When the
+  // GUI loses focus, native terminals take the size back (MIN negotiation).
+  win.on("focus", () => sessionManager?.setSizeAuthority("gui"));
+  win.on("blur", () => sessionManager?.setSizeAuthority(null));
 
   win.webContents.setWindowOpenHandler((details) => {
     void shell.openExternal(details.url);
@@ -159,6 +190,99 @@ function createWindow(): void {
   } else {
     void win.loadFile(join(__dirname, "../renderer/index.html"));
   }
+}
+
+/** Create the window if needed, then bring it to the front. Used on demand. */
+function ensureWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+/**
+ * Drive the real NotificationCenter through permission / dedupe / grouping /
+ * completion and print PASS/FAIL lines the notif-test script greps for. Quits
+ * when done. Honest about environments where the OS suppresses toasts.
+ */
+function runNotificationSelfTest(): void {
+  const results: Array<{ name: string; ok: boolean; detail?: string }> = [];
+  const check = (name: string, ok: boolean, detail?: string): void => {
+    results.push({ name, ok, detail });
+  };
+
+  let supported = false;
+  try {
+    const { Notification } = require("electron");
+    supported = Notification.isSupported();
+  } catch {
+    supported = false;
+  }
+
+  const center = notifications!;
+  const mkPerm = (id: string): import("../shared/types").PendingPermission => ({
+    id,
+    ts: Date.now(),
+    title: "Write permission needed",
+    source: "selftest",
+    rawPrompt: "Apply this change?",
+    kind: "confirm",
+    allowInput: "y\n",
+    denyInput: "n\n",
+  });
+
+  const r1 = center.notify("s-test", mkPerm("p1"));
+  const r2 = center.notify("s-test", mkPerm("p1")); // same → must dedupe
+  const r3 = center.notify("s-test", mkPerm("p2")); // different → independent
+  const c1 = center.notifyCompleted("s-test", {
+    commandLine: "gemini",
+    exitCode: 0,
+  });
+
+  if (supported) {
+    check("permission toast raised", r1 === "raised", `got ${r1}`);
+    check("duplicate permission deduped", r2 === "deduped", `got ${r2}`);
+    check("distinct permission raised", r3 === "raised", `got ${r3}`);
+    check("completion toast raised", c1 === "raised", `got ${c1}`);
+    center.resolve("s-test", "p1");
+    center.resolve("s-test", "p2");
+    check("resolve() closes without throwing", true);
+  } else {
+    // No toast backend (headless CI). The dedupe map is only populated when a
+    // toast actually shows, so we can only assert the API is callable + honest.
+    check(
+      "notifications callable; OS backend unavailable (honest skip)",
+      r1 === "unsupported" && c1 === "unsupported",
+      `perm=${r1} complete=${c1}`,
+    );
+  }
+
+  // Settings gate: disabling notifications suppresses everything.
+  center.updateSettings({
+    notifications: false,
+    notifyOnComplete: true,
+    sound: false,
+    allowInput: "",
+    denyInput: "",
+  });
+  const disabled = center.notify("s-test", mkPerm("p3"));
+  check("disabled in settings → suppressed", disabled === "disabled", `got ${disabled}`);
+
+  const failed = results.filter((r) => !r.ok);
+  console.log("[selftest] notification results:");
+  for (const r of results) {
+    console.log(
+      `[selftest] ${r.ok ? "PASS" : "FAIL"} — ${r.name}${r.detail ? ` (${r.detail})` : ""}`,
+    );
+  }
+  console.log(
+    `[selftest] SUMMARY ${results.length - failed.length}/${results.length} passed; supported=${supported}`,
+  );
+  center.clearAll();
+  app.exit(failed.length === 0 ? 0 : 1);
 }
 
 app.whenReady().then(() => {
@@ -176,6 +300,14 @@ app.whenReady().then(() => {
     onExit: (id, info) => {
       sendToRenderer(IPC.sessionExit, { id, info });
       ipcServer?.sendExit(id, info);
+      // A friendly "completed" toast so the user knows the agent is done even
+      // when they are working elsewhere (or in --nodashboard mode).
+      const commandLine =
+        sessionManager?.list().find((s) => s.id === id)?.commandLine ?? "agent";
+      notifications?.notifyCompleted(id, {
+        commandLine,
+        exitCode: info.code,
+      });
     },
     onListChanged: () =>
       sendToRenderer(IPC.sessionsList, sessionManager?.list() ?? []),
@@ -204,8 +336,9 @@ app.whenReady().then(() => {
   auditStore = createAuditStore(app.getPath("userData"));
 
   sessionManager = new SessionManager(sink, auditStore);
-  ipcServer = new IpcServer(sessionManager);
-  ipcServer.listen();
+  ipcServer = new IpcServer(sessionManager, ensureWindow);
+  // The self-test must not touch the shared relay socket of a running primary.
+  if (process.env.AGENTWATCH_SELFTEST !== "1") ipcServer.listen();
 
   notifications = new NotificationCenter(
     {
@@ -219,6 +352,13 @@ app.whenReady().then(() => {
     },
     sessionManager.getSettings(),
   );
+
+  // Notification self-test (`npm run notif-test`): exercise the real
+  // NotificationCenter, print results, and quit. Runs before any window/IPC.
+  if (process.env.AGENTWATCH_SELFTEST === "1") {
+    runNotificationSelfTest();
+    return;
+  }
 
   // ---- Renderer IPC (architecture §11). All traffic crosses the preload bridge.
   ipcMain.handle(IPC.sessionsGet, () => sessionManager?.list() ?? []);
@@ -318,23 +458,58 @@ app.whenReady().then(() => {
     },
   );
 
-  // Debug: trigger a test notification.
+  // Debug: trigger test notifications (both families) so the user can verify
+  // the whole alert path — permission prompt AND completion — at once.
   ipcMain.on(IPC.debugTestNotification, () => {
     const list = sessionManager?.list() ?? [];
     const sessionId = list[0]?.id || "test-session";
     notifications?.notify(sessionId, {
-      id: "test-permission",
+      id: `test-permission-${Date.now()}`,
       ts: Date.now(),
-      title: "Test Notification",
+      title: "Write permission needed",
       source: "AgentWatch Debug",
-      rawPrompt: "This is a test notification to verify the OS-level alert system.",
+      rawPrompt:
+        "Apply this change to bin/agentwatch.js? This is a test of the OS-level alert system.",
       kind: "confirm",
       allowInput: "y\n",
       denyInput: "n\n",
     });
+    // A moment later, fire a completion toast too (distinct family + grouping).
+    setTimeout(() => {
+      notifications?.notifyCompleted(sessionId, {
+        commandLine: list[0]?.commandLine || "gemini",
+        exitCode: 0,
+      });
+    }, 1200);
   });
 
-  createWindow();
+  // The renderer awaits this before lifting its loading screen, so buttons are
+  // never enabled while the backend (PTYs, socket, store) is still wiring up.
+  ipcMain.handle(IPC.appReady, () => ({
+    ready: true,
+    nodashboard: process.env.AGENTWATCH_NO_DASHBOARD === "1",
+    home: app.getPath("home"),
+  }));
+
+  // Native folder picker for the New Terminal dialog (choose where to launch).
+  ipcMain.handle(IPC.dialogPickDirectory, async (_e, current?: string) => {
+    const result = await dialog.showOpenDialog(mainWindow ?? undefined!, {
+      title: "Choose working directory",
+      defaultPath: current || app.getPath("home"),
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
+
+  // --nodashboard: boot headless. The relay still mirrors into the native
+  // terminal and notifications still fire; the window opens on demand if a later
+  // `agentwatch <cli>` (without the flag) connects, or via `activate` on macOS.
+  if (process.env.AGENTWATCH_NO_DASHBOARD === "1") {
+    console.log("[agentwatch] started in --nodashboard mode (no window).");
+  } else {
+    createWindow();
+  }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

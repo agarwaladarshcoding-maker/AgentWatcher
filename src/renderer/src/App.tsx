@@ -74,6 +74,7 @@ function App(): JSX.Element {
   const soundEnabled = useSettings((s) => s.settings.sound);
 
   const [modal, setModal] = useState<ModalKind>(null);
+  const [booting, setBooting] = useState(true);
 
   const managerRef = useRef<TerminalManager | null>(null);
   if (!managerRef.current) {
@@ -96,6 +97,23 @@ function App(): JSX.Element {
       .catch(() => {
         /* none yet */
       });
+
+    // Hold the loading screen until the backend confirms it is fully wired up
+    // (PTYs, socket server, audit store). Buttons stay disabled until then.
+    let cancelled = false;
+    const liftWhenReady = async (): Promise<void> => {
+      try {
+        await window.agentwatch.appReady();
+      } catch {
+        /* even if the probe fails, don't trap the user behind the splash */
+      }
+      if (!cancelled) setBooting(false);
+    };
+    void liftWhenReady();
+    // Safety net: never trap the user behind the splash if something stalls.
+    const failsafe = window.setTimeout(() => {
+      if (!cancelled) setBooting(false);
+    }, 4000);
 
     const offSessions = window.agentwatch.onSessions((list) =>
       setSessions(list),
@@ -129,6 +147,8 @@ function App(): JSX.Element {
     const offFocus = window.agentwatch.onFocusSession((id) => setActive(id));
 
     return () => {
+      cancelled = true;
+      window.clearTimeout(failsafe);
       offSessions();
       offData();
       offSize();
@@ -194,13 +214,22 @@ function App(): JSX.Element {
         <button
           className="topbar-btn primary"
           onClick={() => setModal("newTerminal")}
+          disabled={booting}
         >
           + New terminal
         </button>
-        <button className="topbar-btn" onClick={() => setModal("history")}>
+        <button
+          className="topbar-btn"
+          onClick={() => setModal("history")}
+          disabled={booting}
+        >
           History
         </button>
-        <button className="topbar-btn" onClick={() => setModal("settings")}>
+        <button
+          className="topbar-btn"
+          onClick={() => setModal("settings")}
+          disabled={booting}
+        >
           Settings
         </button>
       </header>
@@ -218,12 +247,24 @@ function App(): JSX.Element {
                 />
                 <span className="agent-name">{active.commandLine}</span>
                 <span className="agent-pid">pid {active.pid}</span>
-                {active.nativeAttached && (
+                {active.nativeAttached ? (
                   <span
                     className="mirror-chip"
                     title="Mirrored to the native terminal too"
                   >
                     native + GUI
+                  </span>
+                ) : (
+                  <span
+                    className="mirror-chip gui"
+                    title="Started from the AgentWatch GUI"
+                  >
+                    GUI
+                  </span>
+                )}
+                {active.cwd && (
+                  <span className="agent-cwd" title={active.cwd}>
+                    {active.cwd}
                   </span>
                 )}
                 <span className={`state-pill state-${activeState}`}>
@@ -253,6 +294,16 @@ function App(): JSX.Element {
       )}
       {modal === "settings" && <SettingsModal onClose={() => setModal(null)} />}
       {modal === "history" && <HistoryModal onClose={() => setModal(null)} />}
+
+      {booting && (
+        <div className="boot-overlay" role="status" aria-live="polite">
+          <div className="boot-card">
+            <span className="boot-spinner" aria-hidden="true" />
+            <span className="boot-title">Starting AgentWatch…</span>
+            <span className="boot-sub">Wiring up the backend and terminals</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

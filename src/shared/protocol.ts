@@ -26,6 +26,8 @@ export interface CreatePayload {
   cwd: string;
   cols: number;
   rows: number;
+  /** Whether this relay wants the GUI dashboard window shown (default true). */
+  dashboard?: boolean;
 }
 
 export function encode(type: FrameType, payload: Buffer | string): Buffer {
