@@ -1,12 +1,12 @@
-import { useEffect, useState } from "react";
-import type { LaunchInfo } from "../../main/launch";
-import type { PtyExitInfo, PtyStartResult } from "../../shared/ipc";
-import type { AgentState } from "../../shared/types";
-import { TerminalMirror } from "./components/TerminalMirror";
+import { useCallback, useEffect, useRef } from "react";
+import { useSessions } from "./store/sessions";
+import { TerminalManager } from "./terminal/manager";
+import { Sidebar } from "./components/Sidebar";
+import { TerminalsLayer } from "./components/TerminalsLayer";
 import { EventFeed } from "./components/EventFeed";
-import { useWords } from "./store/words";
+import type { AgentState } from "../../shared/types";
 
-const STATE_LABELS: Record<AgentState, string> = {
+const STATE_LABEL: Record<AgentState, string> = {
   idle: "Idle",
   reading: "Reading",
   thinking: "Thinking",
@@ -16,88 +16,127 @@ const STATE_LABELS: Record<AgentState, string> = {
 };
 
 /**
- * Phase 2 renderer: the faithful mirror is still the hero, now with "the words"
- * — a header state badge driven by the interpreter and a live event feed in the
- * right column. The terminal stream never enters React state (§18).
+ * The one window for all agents: sidebar (list + search + switch) · the active
+ * agent's mirror · its event feed. Terminal output is routed straight into the
+ * imperative TerminalManager and never enters React state (§18).
  */
 function App(): JSX.Element {
-  const [info, setInfo] = useState<LaunchInfo | null>(null);
-  const [pid, setPid] = useState<number | null>(null);
-  const [nativeMirror, setNativeMirror] = useState(false);
-  const [exit, setExit] = useState<PtyExitInfo | null>(null);
+  const sessions = useSessions((s) => s.sessions);
+  const activeId = useSessions((s) => s.activeId);
+  const states = useSessions((s) => s.states);
+  const setSessions = useSessions((s) => s.setSessions);
+  const applyState = useSessions((s) => s.applyState);
+  const addEvent = useSessions((s) => s.addEvent);
+  const applyExit = useSessions((s) => s.applyExit);
 
-  const agentState = useWords((s) => s.state);
-  const setWordsState = useWords((s) => s.setState);
-  const addEvent = useWords((s) => s.addEvent);
+  const managerRef = useRef<TerminalManager | null>(null);
+  if (!managerRef.current) {
+    managerRef.current = new TerminalManager((id, data) =>
+      window.agentwatch.sendInput(id, data),
+    );
+  }
+  const manager = managerRef.current;
 
   useEffect(() => {
-    let active = true;
     window.agentwatch
-      .getLaunchInfo()
-      .then((result) => {
-        if (active) setInfo(result);
-      })
+      .getSessions()
+      .then((list) => setSessions(list))
       .catch(() => {
-        if (active) setInfo({ command: "", args: [], cwd: "" });
+        /* none yet */
       });
-    return () => {
-      active = false;
-    };
-  }, []);
 
-  // Subscribe to the words (state + feed). These are safe in React state.
-  useEffect(() => {
-    const offState = window.agentwatch.onState((state) => setWordsState(state));
-    const offEvent = window.agentwatch.onEvent((event) => addEvent(event));
+    const offSessions = window.agentwatch.onSessions((list) =>
+      setSessions(list),
+    );
+    const offData = window.agentwatch.onData((m) => manager.write(m.id, m.chunk));
+    const offSize = window.agentwatch.onSize((m) =>
+      manager.resizeTo(m.id, m.cols, m.rows),
+    );
+    const offState = window.agentwatch.onState((m) => applyState(m.id, m.state));
+    const offEvent = window.agentwatch.onEvent((m) => addEvent(m.id, m.event));
+    const offExit = window.agentwatch.onExit((m) => {
+      applyExit(m.id, m.info.code);
+      const sig = m.info.signal ? `, signal ${m.info.signal}` : "";
+      manager.notice(
+        m.id,
+        `\r\n\x1b[2m── session ended (code ${m.info.code}${sig}) ──\x1b[0m\r\n`,
+      );
+    });
+
     return () => {
+      offSessions();
+      offData();
+      offSize();
       offState();
       offEvent();
+      offExit();
     };
-  }, [setWordsState, addEvent]);
+  }, [manager, setSessions, applyState, addEvent, applyExit]);
 
-  const command =
-    info && info.command ? [info.command, ...info.args].join(" ") : "shell";
-  const running = exit === null;
+  useEffect(() => () => manager.disposeAll(), [manager]);
 
-  const handleStarted = (result: PtyStartResult): void => {
-    setPid(result.pid >= 0 ? result.pid : null);
-    setNativeMirror(result.nativeMirror);
-  };
+  const onGuiSize = useCallback(
+    (id: string, cols: number, rows: number) =>
+      window.agentwatch.resize(id, cols, rows),
+    [],
+  );
+
+  const active = sessions.find((s) => s.id === activeId) ?? null;
+  const activeState: AgentState = active
+    ? active.ended
+      ? "done"
+      : (states[active.id] ?? active.state)
+    : "idle";
+
+  const running = sessions.filter((s) => !s.ended).length;
+  const waiting = sessions.filter(
+    (s) => !s.ended && (states[s.id] ?? s.state) === "waiting",
+  ).length;
 
   return (
     <div className="shell">
       <header className="topbar">
         <span className="logo-dot" aria-hidden="true" />
         <span className="app-name">AgentWatch</span>
-        {nativeMirror && (
-          <span className="mirror-chip" title="Mirrored to the native terminal too">
-            native + GUI
-          </span>
-        )}
-        <span
-          className={`status-badge ${running ? "live" : "ended"}`}
-          role="status"
-        >
-          {running ? "Watching" : "Session ended"}
+        <span className="status-badge live" role="status">
+          {running} running
         </span>
+        {waiting > 0 && (
+          <span className="status-badge waiting">{waiting} waiting</span>
+        )}
       </header>
 
       <div className="layout">
-        <main className="left-col">
-          <section className="agent-card">
-            <div className="agent-header">
-              <span
-                className={`state-dot state-${running ? agentState : "done"} ${running && agentState !== "idle" ? "pulse" : ""}`}
-                aria-hidden="true"
-              />
-              <span className="agent-name">{command}</span>
-              {pid !== null && <span className="agent-pid">pid {pid}</span>}
-              <span className={`state-pill state-${running ? agentState : "done"}`}>
-                {running ? STATE_LABELS[agentState] : exit?.code === 0 ? "Done" : "Exited"}
-              </span>
-            </div>
-            <TerminalMirror onStarted={handleStarted} onExit={setExit} />
-          </section>
+        <Sidebar />
+
+        <main className="center-col">
+          <div className="agent-header">
+            {active ? (
+              <>
+                <span
+                  className={`state-dot state-${activeState} ${!active.ended && activeState !== "idle" ? "pulse" : ""}`}
+                  aria-hidden="true"
+                />
+                <span className="agent-name">{active.commandLine}</span>
+                <span className="agent-pid">pid {active.pid}</span>
+                {active.nativeAttached && (
+                  <span
+                    className="mirror-chip"
+                    title="Mirrored to the native terminal too"
+                  >
+                    native + GUI
+                  </span>
+                )}
+                <span className={`state-pill state-${activeState}`}>
+                  {active.ended ? "Done" : STATE_LABEL[activeState]}
+                </span>
+              </>
+            ) : (
+              <span className="agent-name dim">No agent selected</span>
+            )}
+          </div>
+
+          <TerminalsLayer manager={manager} onGuiSize={onGuiSize} />
         </main>
 
         <aside className="right-col">

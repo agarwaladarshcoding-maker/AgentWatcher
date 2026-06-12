@@ -7,13 +7,15 @@ import type { AgentProfile } from "./profiles/types";
  * structured state + feed events — "the words" (architecture doc §4.2, §20).
  *
  * Invariants it must honor (§18):
- *   - It runs on a COPY only. It never mutates, delays, buffers, or reorders the
- *     mirror stream — `feed()` is called after the verbatim bytes have already
- *     gone to the mirror.
+ *   - Runs on a COPY only. Never mutates, delays, buffers, or reorders the
+ *     mirror stream — feed() is called after the verbatim bytes already left.
  *   - If anything throws, the mirror keeps working: feed() swallows its errors.
  *
  * State resolution is most-specific-wins (§21):
  *   permission > waiting > writing > thinking > reading > done > idle
+ *
+ * For reading/writing it also extracts the file being touched so the event feed
+ * can say *which* file (e.g. "Reading · src/auth/login.js").
  */
 const STATE_PRIORITY: AgentState[] = [
   "waiting",
@@ -33,6 +35,10 @@ const STATE_TITLES: Record<AgentState, string> = {
   done: "Done",
 };
 
+// A path-ish token: optional dirs, a name, and a letter-initial extension
+// (so version numbers like "v1.0" are not mistaken for files).
+const FILE_TOKEN = /[^\s"'`()[\]]+\.[A-Za-z][A-Za-z0-9]{0,7}\b/g;
+
 export interface InterpreterEmit {
   onState: (state: AgentState) => void;
   onEvent: (event: FeedEvent) => void;
@@ -51,6 +57,7 @@ function makeEvent(partial: Omit<FeedEvent, "id" | "ts">): FeedEvent {
 export class Interpreter {
   private buffer = "";
   private currentState: AgentState | null = null;
+  private lastTarget: string | null = null;
   private lastPermissionHash: string | null = null;
   private static readonly MAX_BUFFER = 8192;
 
@@ -62,7 +69,6 @@ export class Interpreter {
   /** Feed a tee'd copy of a raw PTY chunk. Strips ANSI internally. */
   feed(chunk: string): void {
     try {
-      // Keep a bounded tail so memory never grows; lines may arrive split.
       this.buffer = (this.buffer + stripAnsi(chunk)).slice(
         -Interpreter.MAX_BUFFER,
       );
@@ -78,29 +84,31 @@ export class Interpreter {
         }
       }
 
-      // Resolve the next state: a live permission prompt means "waiting";
-      // otherwise classify the last non-empty line.
-      let next: AgentState | null = null;
-      if (permissionMatch) {
-        next = "waiting";
-      } else {
-        const line = this.lastNonEmptyLine();
-        if (line) next = this.classify(line);
-      }
-      if (next) this.setState(next);
+      const line = permissionMatch ? null : this.lastNonEmptyLine();
+      const next: AgentState | null = permissionMatch
+        ? "waiting"
+        : line
+          ? this.classify(line)
+          : null;
 
-      // Emit a permission_needed feed entry (de-duplicated). The full pending
-      // card + Allow/Deny loop is the Phase 3 control plane.
+      if (next) {
+        const target =
+          (next === "reading" || next === "writing") && line
+            ? this.extractTarget(line)
+            : undefined;
+        this.transition(next, target);
+      }
+
       if (permissionMatch) this.notePermission(permissionMatch);
     } catch {
       // Interpretation must never break the mirror.
     }
   }
 
-  /** Emit the session-start event and reset to idle. */
   sessionStart(pid: number, command: string): void {
     this.buffer = "";
     this.currentState = null;
+    this.lastTarget = null;
     this.lastPermissionHash = null;
     this.emit.onEvent(
       makeEvent({
@@ -109,10 +117,9 @@ export class Interpreter {
         detail: `pid ${pid} · ${command}`,
       }),
     );
-    this.setState("idle");
+    this.transition("idle");
   }
 
-  /** Emit the session-end event and move to done. */
   sessionEnd(code: number, signal?: number): void {
     const sig = signal ? `, signal ${signal}` : "";
     this.emit.onEvent(
@@ -122,7 +129,7 @@ export class Interpreter {
         detail: `exit code ${code}${sig}`,
       }),
     );
-    this.setState("done");
+    this.transition("done");
   }
 
   private lastNonEmptyLine(): string | null {
@@ -141,12 +148,36 @@ export class Interpreter {
     return null;
   }
 
-  private setState(state: AgentState): void {
-    if (state === this.currentState) return;
+  /** Pull the most likely file path out of a line, if any. */
+  private extractTarget(line: string): string | undefined {
+    const tokens = line.match(FILE_TOKEN);
+    if (!tokens || tokens.length === 0) return undefined;
+    // The last token is usually the operand (e.g. "Reading file src/app.ts").
+    return tokens[tokens.length - 1];
+  }
+
+  /**
+   * Move to a state and/or a new target. Emits a state event when the state
+   * changes OR when the same state touches a new file, so the feed lists each
+   * file (e.g. several "Reading" entries with different detail).
+   */
+  private transition(state: AgentState, target?: string): void {
+    const stateChanged = state !== this.currentState;
+    const targetChanged = Boolean(target) && target !== this.lastTarget;
+    if (!stateChanged && !targetChanged) return;
+
     this.currentState = state;
-    this.emit.onState(state);
+    if (target) this.lastTarget = target;
+
+    if (stateChanged) this.emit.onState(state);
+
     this.emit.onEvent(
-      makeEvent({ kind: "state_change", state, title: STATE_TITLES[state] }),
+      makeEvent({
+        kind: "state_change",
+        state,
+        title: STATE_TITLES[state],
+        detail: target,
+      }),
     );
   }
 

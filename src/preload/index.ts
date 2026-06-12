@@ -1,23 +1,23 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
-import type { LaunchInfo } from "../main/launch";
 import {
   IPC,
-  type PtySize,
-  type PtyStartResult,
-  type PtyExitInfo,
-  type AgentState,
-  type FeedEvent,
+  type SessionInfo,
+  type SessionDataMsg,
+  type SessionStateMsg,
+  type SessionEventMsg,
+  type SessionSizeMsg,
+  type SessionExitMsg,
+  type SessionInputMsg,
+  type SessionResizeMsg,
 } from "../shared/ipc";
 
 /**
  * The preload bridge — the ONLY surface that crosses from main to the renderer
- * (architecture doc §18, §22). contextIsolation is on and nodeIntegration is
- * off, so the renderer never touches Node, the PTY, or SQLite directly; it only
- * sees this typed API on `window.agentwatch`.
+ * (architecture doc §18, §22). contextIsolation on, nodeIntegration off; the
+ * renderer never touches Node, the PTYs, or the socket directly.
  *
- * Phase 1 adds the mirror surface: start the PTY, stream output, send input,
- * resize, and observe exit. Each subscription returns an unsubscribe fn so the
- * renderer can clean up listeners and never leak them across re-mounts.
+ * Everything is session-keyed now (multi-agent). Each subscription returns an
+ * unsubscribe fn so the renderer never leaks listeners.
  */
 function subscribe<T>(
   channel: string,
@@ -30,45 +30,44 @@ function subscribe<T>(
 }
 
 const api = {
-  // what we were launched to watch
-  getLaunchInfo(): Promise<LaunchInfo> {
-    return ipcRenderer.invoke(IPC.appGetLaunchInfo);
+  // --- sessions ---
+  getSessions(): Promise<SessionInfo[]> {
+    return ipcRenderer.invoke(IPC.sessionsGet);
+  },
+  onSessions(callback: (list: SessionInfo[]) => void): () => void {
+    return subscribe<SessionInfo[]>(IPC.sessionsList, callback);
   },
 
-  // --- mirror ---
-  /** Spawn the PTY at the given size. Call once xterm has mounted + fitted. */
-  startPty(size: PtySize): Promise<PtyStartResult> {
-    return ipcRenderer.invoke(IPC.ptyStart, size);
+  // --- mirror (verbatim output goes straight to xterm, never React state) ---
+  onData(callback: (msg: SessionDataMsg) => void): () => void {
+    return subscribe<SessionDataMsg>(IPC.sessionData, callback);
   },
-  /** Verbatim PTY output. Push straight into term.write() — never into React state. */
-  onData(callback: (chunk: string) => void): () => void {
-    return subscribe<string>(IPC.ptyData, callback);
+  onSize(callback: (msg: SessionSizeMsg) => void): () => void {
+    return subscribe<SessionSizeMsg>(IPC.sessionSize, callback);
   },
-  /** Send keystrokes / paste to the PTY stdin. */
-  sendInput(data: string): void {
-    ipcRenderer.send(IPC.ptyInput, data);
+  onExit(callback: (msg: SessionExitMsg) => void): () => void {
+    return subscribe<SessionExitMsg>(IPC.sessionExit, callback);
   },
-  /** Keep the PTY size synced to the rendered terminal (honored only when the mirror owns size). */
-  resize(cols: number, rows: number): void {
-    ipcRenderer.send(IPC.ptyResize, { cols, rows } satisfies PtySize);
+  sendInput(id: string, data: string): void {
+    ipcRenderer.send(IPC.sessionInput, { id, data } satisfies SessionInputMsg);
   },
-  /** Authoritative PTY size changed (e.g. the native terminal resized). */
-  onSize(callback: (size: PtySize) => void): () => void {
-    return subscribe<PtySize>(IPC.ptySize, callback);
+  resize(id: string, cols: number, rows: number): void {
+    ipcRenderer.send(IPC.sessionResize, {
+      id,
+      cols,
+      rows,
+    } satisfies SessionResizeMsg);
   },
-  /** Fires once when the wrapped process exits. */
-  onExit(callback: (info: PtyExitInfo) => void): () => void {
-    return subscribe<PtyExitInfo>(IPC.ptyExit, callback);
+  close(id: string): void {
+    ipcRenderer.send(IPC.sessionClose, id);
   },
 
   // --- the words ---
-  /** Current interpreted agent state. */
-  onState(callback: (state: AgentState) => void): () => void {
-    return subscribe<AgentState>(IPC.agentState, callback);
+  onState(callback: (msg: SessionStateMsg) => void): () => void {
+    return subscribe<SessionStateMsg>(IPC.sessionState, callback);
   },
-  /** A new entry for the live event feed. */
-  onEvent(callback: (event: FeedEvent) => void): () => void {
-    return subscribe<FeedEvent>(IPC.feedEvent, callback);
+  onEvent(callback: (msg: SessionEventMsg) => void): () => void {
+    return subscribe<SessionEventMsg>(IPC.sessionEvent, callback);
   },
 };
 
@@ -81,7 +80,6 @@ if (process.contextIsolated) {
     console.error("[agentwatch] failed to expose preload bridge:", error);
   }
 } else {
-  // Fallback only used if contextIsolation were ever disabled (it isn't).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (globalThis as any).agentwatch = api;
 }

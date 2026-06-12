@@ -236,10 +236,35 @@ Each phase has a hard **exit criterion**. We do not start the next phase until t
 ### Phase 5 — Post-MVP (deferred)
 
 - Explicitly NOT in v1 — parked here so we don't drift.
-    - Multi-agent switching + multiple concurrent PTYs
-    - User-editable profiles / pattern UI
-    - Session replay, search, export
-    - Remote/headless watching
+    - [x]  Multi-agent switching + multiple concurrent PTYs *(pulled forward — see §28)*
+    - [x]  Search (filter agents by CLI name) *(pulled forward — see §28)*
+    - [ ]  User-editable profiles / pattern UI
+    - [ ]  Session replay, export
+    - [ ]  Remote/headless watching
+
+## 28. Multi-agent + dual-mirror relay (pulled forward)
+
+Delivered ahead of schedule on user request: one window shows **all** running
+agents (left sidebar, searchable, click to switch) while every agent still
+mirrors in the **native terminal** that launched it.
+
+- **Relay launcher.** `agentwatch <cli>` no longer opens its own window. It
+  connects to a single **primary** Electron app over a local socket
+  (`bin/agentwatch.js` ⇄ `src/main/ipcServer.ts`, framed by
+  `src/shared/protocol.ts`) and acts as a byte relay: native-terminal stdin →
+  PTY, PTY output → native terminal. One agent spawn, no double compute.
+- **SessionManager** (`src/main/sessionManager.ts`) owns many sessions, each one
+  PTY + interpreter + profile. A session can have several viewers (the relay and
+  the GUI); the PTY size is the **min across viewers**, so neither view overflows.
+- **Renderer** keeps one live xterm per session (instant switching + full
+  scrollback) via an imperative `TerminalManager`; output never enters React.
+- **Universal palette** centralized in `src/renderer/src/theme.ts` + the CSS
+  tokens, shared by the chrome and the xterm theme.
+
+**Bug fixes shipped alongside:** terminal scroll/overflow and the missing
+typed-text/cursor glitch (both caused by GUI↔native size mismatch — fixed by min
+size negotiation); the event feed now names the file being read/written
+(interpreter file extraction).
 
 ## 9. Resolved decisions
 

@@ -1,6 +1,7 @@
 /**
- * The data & event model for "the words" (architecture doc §6). Pure types,
- * no runtime dependencies — safe to import from main, preload, and renderer.
+ * The data & event model for "the words" (architecture doc §6) plus the
+ * multi-session model. Pure types, no runtime dependencies — safe to import
+ * from main, preload, and renderer.
  */
 
 /** The interpreted state of the agent, derived from the cleaned stream. */
@@ -26,6 +27,23 @@ export interface FeedEvent {
   state?: AgentState;
   title: string;
   detail?: string;
+}
+
+/** A running (or finished) agent session — one PTY, one PID. */
+export interface SessionInfo {
+  id: string;
+  command: string;
+  args: string[];
+  commandLine: string;
+  profile: string;
+  pid: number;
+  state: AgentState;
+  startedAt: number;
+  /** Set once the process exits. */
+  exitCode?: number;
+  ended: boolean;
+  /** True while a native terminal relay is attached to this session. */
+  nativeAttached: boolean;
 }
 
 /**
