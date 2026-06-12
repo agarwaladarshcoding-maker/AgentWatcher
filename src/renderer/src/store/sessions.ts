@@ -81,7 +81,7 @@ export const useSessions = create<SessionsStore>((set) => ({
 
   applyExit: (id, code) =>
     set((prev) => ({
-      states: { ...prev.states, [id]: "done" },
+      states: { ...prev.states, [id]: "completed" },
       sessions: prev.sessions.map((s) =>
         s.id === id ? { ...s, ended: true, exitCode: code } : s,
       ),

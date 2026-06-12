@@ -13,11 +13,9 @@ import type { AgentState } from "../../shared/types";
 
 const STATE_LABEL: Record<AgentState, string> = {
   idle: "Idle",
-  reading: "Reading",
-  thinking: "Thinking",
-  writing: "Writing",
+  working: "Working",
   waiting: "Waiting",
-  done: "Done",
+  completed: "Completed",
 };
 
 /** A soft two-note chime via WebAudio (no asset needed). */
@@ -189,7 +187,7 @@ function App(): JSX.Element {
   const active = sessions.find((s) => s.id === activeId) ?? null;
   const activeState: AgentState = active
     ? active.ended
-      ? "done"
+      ? "completed"
       : (states[active.id] ?? active.state)
     : "idle";
 
@@ -242,7 +240,7 @@ function App(): JSX.Element {
             {active ? (
               <>
                 <span
-                  className={`state-dot state-${activeState} ${!active.ended && activeState !== "idle" ? "pulse" : ""}`}
+                  className={`state-dot state-${activeState} ${!active.ended && activeState === "working" ? "pulse" : ""}`}
                   aria-hidden="true"
                 />
                 <span className="agent-name">{active.commandLine}</span>
@@ -268,7 +266,7 @@ function App(): JSX.Element {
                   </span>
                 )}
                 <span className={`state-pill state-${activeState}`}>
-                  {active.ended ? "Done" : STATE_LABEL[activeState]}
+                  {active.ended ? "Completed" : STATE_LABEL[activeState]}
                 </span>
               </>
             ) : (

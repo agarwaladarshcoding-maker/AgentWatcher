@@ -188,6 +188,28 @@ export class NotificationCenter {
     return shown ? "raised" : "unsupported";
   }
 
+  /** An agent finished a turn and is waiting for the user — a gentle "ready" toast. */
+  notifyReady(
+    sessionId: string,
+    info: { commandLine: string },
+  ): "raised" | "disabled" | "unsupported" {
+    if (!this.settings.notifications || !this.settings.notifyOnComplete)
+      return "disabled";
+
+    const shown = this.raise(
+      this.completedKey(sessionId),
+      {
+        title: "✓ Ready for you",
+        subtitle: info.commandLine,
+        body: "The agent finished and is waiting. Click to jump back to it.",
+        timeoutType: "default",
+        silent: !this.settings.sound,
+      },
+      { onClick: () => this.deps.focus(sessionId) },
+    );
+    return shown ? "raised" : "unsupported";
+  }
+
   /** An agent finished — a friendly "completed" toast (informational). */
   notifyCompleted(
     sessionId: string,

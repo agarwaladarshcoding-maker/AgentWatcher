@@ -4,14 +4,17 @@
  * from main, preload, and renderer.
  */
 
-/** The interpreted state of the agent, derived from the cleaned stream. */
-export type AgentState =
-  | "idle"
-  | "reading"
-  | "thinking"
-  | "writing"
-  | "waiting"
-  | "done";
+/**
+ * The interpreted state of the agent. Deliberately simple and robust: it is
+ * derived from the FLOW of output (activity), not fragile per-CLI regexes, so
+ * it works for any agent.
+ *
+ *   - idle:      at rest, nothing happening
+ *   - working:   output is actively streaming (the agent is doing something)
+ *   - waiting:   blocked on a permission/decision prompt (the control plane)
+ *   - completed: just finished a burst of work and went quiet (then decays to idle)
+ */
+export type AgentState = "idle" | "working" | "waiting" | "completed";
 
 /** An entry in the live event feed. */
 export interface FeedEvent {

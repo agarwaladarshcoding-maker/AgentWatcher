@@ -1,16 +1,16 @@
-import type { AgentState } from "../../../shared/types";
-
 /**
- * A swappable set of regex patterns describing how a given agent signals state
- * and permission prompts (architecture doc §6, §21). Profiles are heuristic and
- * degrade gracefully: a missing pattern means "fewer words", never a broken
- * terminal (§18).
+ * A swappable description of how a given agent signals a PERMISSION prompt
+ * (architecture doc §6, §21). State (working/idle/completed) is no longer
+ * regex-matched — it is derived from output activity in the interpreter, which
+ * is far more robust across CLIs. Profiles now only need to know how this agent
+ * asks for permission and how to answer Allow/Deny.
+ *
+ * Profiles are heuristic and degrade gracefully: a missing pattern means "fewer
+ * permission annotations", never a broken terminal (§18).
  */
 export interface AgentProfile {
   name: string;
   match: {
-    /** Per-state regexes. A state may be omitted; absence just means no match. */
-    state: Partial<Record<AgentState, RegExp[]>>;
     /** Permission-prompt patterns, tested against the rolling buffer tail. */
     permission: RegExp[];
   };

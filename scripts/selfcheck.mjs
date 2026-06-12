@@ -214,6 +214,31 @@ assert(
   "new terminal: login PATH resolution present",
 );
 assert(
+  /SIGKILL/.test(read("src/main/pty/ptyManager.ts")) &&
+    /process\.kill\(-pid/.test(read("src/main/pty/ptyManager.ts")),
+  "terminate: kill escalates to SIGKILL + signals the process group",
+);
+assert(
+  read("src/main/interpreter/interpreter.ts").includes("lastOutputAt") &&
+    !read("src/main/interpreter/interpreter.ts").includes("profile.match.state"),
+  "state: activity-based detection (no fragile per-CLI state regexes)",
+);
+assert(
+  /"idle" \| "working" \| "waiting" \| "completed"/.test(
+    read("src/shared/types.ts"),
+  ),
+  "state: simplified to idle/working/waiting/completed",
+);
+assert(
+  read("src/main/index.ts").includes("notifyReady(") &&
+    read("src/main/index.ts").includes("windowFocused"),
+  "state: 'ready' notification fires on completion when not focused",
+);
+assert(
+  read("src/main/sessionManager.ts").includes("interpreter.dispose()"),
+  "state: interpreter timer disposed on exit/remove (no leaks)",
+);
+assert(
   read("src/main/sessionManager.ts").includes("setSizeAuthority") &&
     read("src/main/index.ts").includes('setSizeAuthority("gui")'),
   "terminal sizing: GUI focus drives PTY size (fixes cramped agent)",

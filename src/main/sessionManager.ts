@@ -178,6 +178,7 @@ export class SessionManager {
         this.sink.onPermissionResolved(id, pid);
       }
       interpreter.sessionEnd(exit.code, exit.signal);
+      interpreter.dispose();
       this.store?.sessionEnded(id, exit.code);
       this.sink.onExit(id, exit);
       this.sink.onListChanged();
@@ -274,7 +275,7 @@ export class SessionManager {
       id: `v${Date.now().toString(36)}-${p.id}`,
       ts: Date.now(),
       kind: "verdict",
-      state: decision === "deny" ? undefined : "writing",
+      state: decision === "deny" ? undefined : "working",
       title: label,
       detail: p.title,
     });
@@ -307,12 +308,21 @@ export class SessionManager {
 
   /** Remove a session record entirely (after it has ended). */
   remove(id: string): void {
+    const s = this.sessions.get(id);
+    if (s) {
+      // Make sure a still-running process is stopped, and release its timer.
+      s.pty.kill();
+      s.interpreter.dispose();
+    }
     this.sessions.delete(id);
     this.sink.onListChanged();
   }
 
   killAll(): void {
-    for (const s of this.sessions.values()) s.pty.kill();
+    for (const s of this.sessions.values()) {
+      s.pty.kill();
+      s.interpreter.dispose();
+    }
   }
 
   /**

@@ -122,13 +122,47 @@ export class PtyManager {
     }
   }
 
-  /** Forward a kill to the child (e.g. when the window closes). */
-  kill(signal?: string): void {
-    try {
-      this.proc?.kill(signal);
-    } catch {
-      // already gone
-    }
+  /**
+   * Forward a kill to the child and GUARANTEE it dies. Agents like the Gemini
+   * CLI are Node processes that ignore a soft SIGHUP and often spawn children,
+   * so a single default kill frequently left them running. We therefore:
+   *   1. signal the whole process GROUP (negative pid) so children die too,
+   *   2. start with SIGTERM (graceful), and
+   *   3. escalate to SIGKILL after a short grace period if it is still alive.
+   */
+  kill(signal: NodeJS.Signals = "SIGTERM"): void {
+    const proc = this.proc;
+    if (!proc) return;
+    const pid = proc.pid;
+
+    const signalAll = (sig: NodeJS.Signals): void => {
+      // node-pty's own kill (handles the pty master); best for the leader.
+      try {
+        proc.kill(sig);
+      } catch {
+        /* may already be gone */
+      }
+      // The process group (the child is a session leader via node-pty), so this
+      // reaches any subprocesses it spawned.
+      try {
+        process.kill(-pid, sig);
+      } catch {
+        /* group may not exist / already gone */
+      }
+    };
+
+    signalAll(signal);
+
+    // Escalate if the process is still alive after the grace period.
+    setTimeout(() => {
+      if (!this.proc) return; // onExit already cleared it
+      try {
+        process.kill(pid, 0); // throws if the process is gone
+        signalAll("SIGKILL");
+      } catch {
+        /* already exited — nothing to do */
+      }
+    }, 1500);
   }
 
   onData(listener: DataListener): () => void {

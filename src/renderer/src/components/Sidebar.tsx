@@ -5,11 +5,9 @@ import type { AgentState, SessionInfo } from "../../../shared/types";
 
 const STATE_LABEL: Record<AgentState, string> = {
   idle: "Idle",
-  reading: "Reading",
-  thinking: "Thinking",
-  writing: "Writing",
+  working: "Working",
   waiting: "Waiting",
-  done: "Done",
+  completed: "Completed",
 };
 
 /**
@@ -94,9 +92,9 @@ export function Sidebar({
         ) : (
           filtered.map((s) => {
             const state: AgentState = s.ended
-              ? "done"
+              ? "completed"
               : (states[s.id] ?? s.state);
-            const live = !s.ended && state !== "idle";
+            const live = !s.ended && state === "working";
             const pendingCount = pending[s.id]?.length ?? 0;
             return (
               <li
@@ -130,7 +128,7 @@ export function Sidebar({
                       </span>
                     )}
                     <span className={`state-pill state-${state}`}>
-                      {s.ended ? "Done" : STATE_LABEL[state]}
+                      {s.ended ? "Completed" : STATE_LABEL[state]}
                     </span>
                   </span>
                 </button>

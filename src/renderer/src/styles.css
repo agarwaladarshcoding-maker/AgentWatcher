@@ -936,32 +936,28 @@ body,
   white-space: nowrap;
 }
 
-.state-dot.state-reading,
 .state-dot.state-waiting {
   background: var(--blue-dot);
 }
-.state-pill.state-reading,
 .state-pill.state-waiting {
   color: var(--blue-text);
   background: var(--blue-bg);
   border-color: transparent;
 }
 
-.state-dot.state-thinking {
+.state-dot.state-working {
   background: var(--amber-dot);
 }
-.state-pill.state-thinking {
+.state-pill.state-working {
   color: var(--amber-text);
   background: var(--amber-bg);
   border-color: transparent;
 }
 
-.state-dot.state-writing,
-.state-dot.state-done {
+.state-dot.state-completed {
   background: var(--green-dot);
 }
-.state-pill.state-writing,
-.state-pill.state-done {
+.state-pill.state-completed {
   color: var(--green-text);
   background: var(--green-bg);
   border-color: transparent;

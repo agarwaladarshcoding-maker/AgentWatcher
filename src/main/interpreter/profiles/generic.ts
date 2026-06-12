@@ -8,19 +8,6 @@ import type { AgentProfile } from "./types";
 export const genericProfile: AgentProfile = {
   name: "generic",
   match: {
-    state: {
-      idle: [/^\s*[>$#]\s*$/],
-      reading: [/\b(reading|opening|loading|scanning|fetching|searching)\b/i],
-      thinking: [/\b(thinking|analy[sz]ing|planning|reasoning|considering)\b/i],
-      writing: [/\b(writing|editing|creating|patch(ing)?|applying|saving)\b/i],
-      waiting: [
-        /\?\s*\(y\/n\)/i,
-        /\?\s*\(yes\/no\)/i,
-        /\bpress\b.*\bto continue\b/i,
-        /\besc to cancel\b/i,
-      ],
-      done: [/\b(done|complete|finished|success(ful)?)\b/i],
-    },
     permission: [
       /allow\b.*\?\s*\(y\/n\)/i,
       /\?\s*\(y\/n\)\s*$/im,

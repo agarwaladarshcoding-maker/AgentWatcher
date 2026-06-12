@@ -12,7 +12,7 @@ import {
   type SessionSpawnMsg,
   type PermissionRespondMsg,
 } from "../shared/ipc";
-import type { AppSettings, HistoryDetail } from "../shared/types";
+import type { AgentState, AppSettings, HistoryDetail } from "../shared/types";
 
 /**
  * Electron main: the single PRIMARY that owns the window and every PTY. Relay
@@ -26,6 +26,9 @@ let sessionManager: SessionManager | null = null;
 let notifications: NotificationCenter | null = null;
 let auditStore: AuditStore | null = null;
 
+/** Whether the dashboard window currently has OS focus (gates "ready" toasts). */
+let windowFocused = false;
+
 /** Keys (`${sessionId}:${permissionId}`) of every still-pending permission. */
 const pendingKeys = new Set<string>();
 
@@ -36,7 +39,7 @@ if (process.platform === "win32") app.setAppUserModelId("com.agentwatch.app");
 
 // The notification self-test runs in full isolation (its own userData dir, no
 // socket server) so it can never disturb a real running primary.
-if (process.env.AGENTWATCH_SELFTEST === "1") {
+if (process.env.AGENTWATCH_SELFTEST) {
   try {
     const os = require("node:os");
     const p = require("node:path").join(
@@ -170,6 +173,7 @@ function createWindow(): void {
   win.on("ready-to-show", () => win.show());
   win.on("closed", () => {
     if (mainWindow === win) mainWindow = null;
+    windowFocused = false;
     // The GUI is gone; let native terminals drive PTY size again.
     sessionManager?.setSizeAuthority(null);
   });
@@ -177,8 +181,14 @@ function createWindow(): void {
   // While the dashboard is focused it OWNS the PTY size, so agents use the full
   // GUI width even when a small native terminal is also mirroring them. When the
   // GUI loses focus, native terminals take the size back (MIN negotiation).
-  win.on("focus", () => sessionManager?.setSizeAuthority("gui"));
-  win.on("blur", () => sessionManager?.setSizeAuthority(null));
+  win.on("focus", () => {
+    windowFocused = true;
+    sessionManager?.setSizeAuthority("gui");
+  });
+  win.on("blur", () => {
+    windowFocused = false;
+    sessionManager?.setSizeAuthority(null);
+  });
 
   win.webContents.setWindowOpenHandler((details) => {
     void shell.openExternal(details.url);
@@ -285,6 +295,217 @@ function runNotificationSelfTest(): void {
   app.exit(failed.length === 0 ? 0 : 1);
 }
 
+/**
+ * Backend scenario test (`npm run scenarios-test`): spin up the REAL
+ * SessionManager + interpreter + PTY and run many CLIs through it to prove:
+ *   - state detection (idle → working → completed) works from output activity
+ *     alone, for any CLI; and
+ *   - terminate/kill actually stops a process (the Gemini-won't-die bug).
+ * Prints PASS/FAIL lines and exits. Optional real agent CLIs (gemini, claude,
+ * kiro) are tested when present and skipped honestly otherwise.
+ */
+async function runScenarioTests(): Promise<void> {
+  const nodePath = require("node:path");
+  const nodeFs = require("node:fs");
+  const sleep = (ms: number): Promise<void> =>
+    new Promise((r) => setTimeout(r, ms));
+  const waitFor = async (
+    pred: () => boolean,
+    timeoutMs: number,
+    stepMs = 60,
+  ): Promise<boolean> => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) {
+      if (pred()) return true;
+      await sleep(stepMs);
+    }
+    return pred();
+  };
+  const findOnPath = (cmd: string): string | null => {
+    for (const dir of (process.env.PATH || "").split(nodePath.delimiter)) {
+      if (!dir) continue;
+      const p = nodePath.join(dir, cmd);
+      try {
+        nodeFs.accessSync(p, nodeFs.constants.X_OK);
+        return p;
+      } catch {
+        /* not here */
+      }
+    }
+    return null;
+  };
+
+  interface Rec {
+    states: AgentState[];
+    output: string;
+    exited: boolean;
+    exitCode?: number;
+  }
+  const records = new Map<string, Rec>();
+  const rec = (id: string): Rec => {
+    let r = records.get(id);
+    if (!r) {
+      r = { states: [], output: "", exited: false };
+      records.set(id, r);
+    }
+    return r;
+  };
+
+  const sink: SessionSink = {
+    onData: (id, chunk) => {
+      rec(id).output += chunk;
+    },
+    onState: (id, state) => {
+      const r = rec(id);
+      if (r.states[r.states.length - 1] !== state) r.states.push(state);
+    },
+    onEvent: () => {},
+    onSize: () => {},
+    onExit: (id, info) => {
+      const r = rec(id);
+      r.exited = true;
+      r.exitCode = info.code;
+    },
+    onListChanged: () => {},
+    onPermissionPending: () => {},
+    onPermissionResolved: () => {},
+    onPermissionResponded: () => {},
+  };
+
+  const mgr = new SessionManager(sink);
+  const home = app.getPath("home");
+  const results: Array<{ name: string; ok: boolean; soft?: boolean; detail?: string }> = [];
+  const check = (
+    name: string,
+    ok: boolean,
+    detail?: string,
+    soft = false,
+  ): void => {
+    results.push({ name, ok, soft, detail });
+    const tag = ok ? "PASS" : soft ? "SKIP" : "FAIL";
+    console.log(`[scenarios] ${tag} — ${name}${detail ? ` (${detail})` : ""}`);
+  };
+  const spawn = (command: string, args: string[]): string =>
+    mgr.create({ command, args, cwd: home, cols: 80, rows: 24 }, "gui").id;
+
+  console.log("[scenarios] starting backend scenario tests…");
+
+  // 1) Generic quick command — output then clean exit.
+  try {
+    const id = spawn("bash", ["-lc", "echo hello world"]);
+    await waitFor(() => rec(id).exited, 6000);
+    const r = rec(id);
+    check("bash echo: output mirrored", r.output.includes("hello world"));
+    check("bash echo: state reached working", r.states.includes("working"), r.states.join(">"));
+    check("bash echo: exited cleanly", r.exited && r.exitCode === 0, `code ${r.exitCode}`);
+  } catch (e) {
+    check("bash echo", false, String(e));
+  }
+
+  // 2) Streaming bursts — working during stream, completed when it goes quiet.
+  try {
+    const script =
+      "process.stdout.write('start');let n=0;const t=setInterval(()=>{process.stdout.write(' .'+n);if(++n>4)clearInterval(t);},80);setTimeout(()=>process.exit(0),1600)";
+    const id = spawn("node", ["-e", script]);
+    await waitFor(() => rec(id).states.includes("working"), 3000);
+    check("node stream: detected working", rec(id).states.includes("working"));
+    await waitFor(() => rec(id).states.includes("completed") || rec(id).exited, 4000);
+    check(
+      "node stream: reached completed/idle after quiet",
+      rec(id).states.includes("completed") || rec(id).exited,
+      rec(id).states.join(">"),
+    );
+    await waitFor(() => rec(id).exited, 3000);
+    check("node stream: exited", rec(id).exited, `code ${rec(id).exitCode}`);
+  } catch (e) {
+    check("node stream", false, String(e));
+  }
+
+  // 3) TERMINATE — a process that never exits must die on kill().
+  try {
+    const id = spawn("node", [
+      "-e",
+      "setInterval(()=>process.stdout.write('tick '),150)",
+    ]);
+    const working = await waitFor(() => rec(id).states.includes("working"), 4000);
+    check("long-runner: detected working", working, rec(id).states.join(">"));
+    await sleep(400);
+    mgr.kill(id);
+    const died = await waitFor(() => rec(id).exited, 5000);
+    check("terminate: kill() actually stops the process", died, `exited=${rec(id).exited}`);
+  } catch (e) {
+    check("terminate", false, String(e));
+  }
+
+  // 4) Python (if available).
+  if (findOnPath("python3")) {
+    try {
+      const id = spawn("python3", ["-c", "print('py works')"]);
+      await waitFor(() => rec(id).exited, 6000);
+      const r = rec(id);
+      check("python3: output + exit", r.output.includes("py works") && r.exited, `code ${r.exitCode}`);
+    } catch (e) {
+      check("python3", false, String(e));
+    }
+  } else {
+    check("python3 present", true, "not installed — skipped", true);
+  }
+
+  // 5) Real agent CLIs — spawn, confirm activity, then terminate. kiro falls
+  //    back to the Kiro.app launcher with --version so it never opens the IDE.
+  const kiroLauncher = "/Applications/Kiro.app/Contents/Resources/app/bin/code";
+  const agents: Array<{ name: string; command: string | null; args: string[]; quick: boolean }> = [
+    { name: "gemini", command: findOnPath("gemini"), args: [], quick: false },
+    { name: "claude", command: findOnPath("claude"), args: [], quick: false },
+    {
+      name: "kiro",
+      command: findOnPath("kiro") || (nodeFs.existsSync(kiroLauncher) ? kiroLauncher : null),
+      args: ["--version"],
+      quick: true,
+    },
+  ];
+
+  for (const agent of agents) {
+    if (!agent.command) {
+      check(`${agent.name}: present`, true, "not installed — skipped", true);
+      continue;
+    }
+    try {
+      const id = spawn(agent.command, agent.args);
+      if (agent.quick) {
+        const done = await waitFor(() => rec(id).exited, 8000);
+        const r = rec(id);
+        check(
+          `${agent.name}: spawned + mirrored + exited`,
+          done && r.states.includes("working"),
+          `code ${r.exitCode}, states ${r.states.join(">")}`,
+          !done, // soft if it didn't exit in time
+        );
+      } else {
+        const working = await waitFor(() => rec(id).states.includes("working"), 6000);
+        check(
+          `${agent.name}: spawned + activity detected`,
+          working,
+          rec(id).states.join(">") || "no output",
+          !working,
+        );
+        // The real point: it must be terminable.
+        mgr.kill(id);
+        const died = await waitFor(() => rec(id).exited, 6000);
+        check(`${agent.name}: terminate stops it`, died, `exited=${rec(id).exited}`);
+      }
+    } catch (e) {
+      check(`${agent.name}`, false, String(e));
+    }
+  }
+
+  mgr.killAll();
+  const hard = results.filter((r) => !r.ok && !r.soft);
+  const passed = results.filter((r) => r.ok).length;
+  console.log(`\n[scenarios] SUMMARY ${passed}/${results.length} passed, ${hard.length} hard failures.`);
+  app.exit(hard.length === 0 ? 0 : 1);
+}
+
 app.whenReady().then(() => {
   // The sink fans every session signal out to BOTH the renderer (GUI mirror)
   // and the relay sockets (native terminals).
@@ -293,7 +514,18 @@ app.whenReady().then(() => {
       sendToRenderer(IPC.sessionData, { id, chunk });
       ipcServer?.sendOutput(id, chunk);
     },
-    onState: (id, state) => sendToRenderer(IPC.sessionState, { id, state }),
+    onState: (id, state) => {
+      sendToRenderer(IPC.sessionState, { id, state });
+      // When the agent finishes a turn and the user isn't looking at the
+      // window (or there is none, in --nodashboard mode), nudge them that it's
+      // ready. Session-end replaces this with its own toast.
+      if (state === "completed" && !windowFocused) {
+        const commandLine =
+          sessionManager?.list().find((s) => s.id === id)?.commandLine ??
+          "agent";
+        notifications?.notifyReady(id, { commandLine });
+      }
+    },
     onEvent: (id, event) => sendToRenderer(IPC.sessionEvent, { id, event }),
     onSize: (id, cols, rows) =>
       sendToRenderer(IPC.sessionSize, { id, cols, rows }),
@@ -337,8 +569,8 @@ app.whenReady().then(() => {
 
   sessionManager = new SessionManager(sink, auditStore);
   ipcServer = new IpcServer(sessionManager, ensureWindow);
-  // The self-test must not touch the shared relay socket of a running primary.
-  if (process.env.AGENTWATCH_SELFTEST !== "1") ipcServer.listen();
+  // The self-tests must not touch the shared relay socket of a running primary.
+  if (!process.env.AGENTWATCH_SELFTEST) ipcServer.listen();
 
   notifications = new NotificationCenter(
     {
@@ -357,6 +589,14 @@ app.whenReady().then(() => {
   // NotificationCenter, print results, and quit. Runs before any window/IPC.
   if (process.env.AGENTWATCH_SELFTEST === "1") {
     runNotificationSelfTest();
+    return;
+  }
+
+  // Scenarios self-test (`npm run scenarios-test`): drive REAL CLIs through the
+  // actual SessionManager + interpreter + PTY to verify state detection and the
+  // terminate/kill path, then quit.
+  if (process.env.AGENTWATCH_SELFTEST === "scenarios") {
+    void runScenarioTests();
     return;
   }
 

@@ -16,27 +16,6 @@ import type { AgentProfile } from "./types";
 export const geminiProfile: AgentProfile = {
   name: "gemini",
   match: {
-    state: {
-      idle: [/^\s*>\s*$/],
-      reading: [
-        /\b(reading|reading file|loading|scanning|searching)\b/i,
-        /\bReadFile\b/,
-        /\bReadFolder\b/,
-        /\bSearchText\b/,
-      ],
-      thinking: [/\b(thinking|analy[sz]ing|planning|reasoning)\b/i],
-      writing: [
-        /\b(writing|editing|applying|WriteFile|patch)\b/i,
-        /\bReplace\b/,
-      ],
-      waiting: [
-        /\?\s*\(y\/n\)/i,
-        /\bapply this change\?/i,
-        /\benter to submit\b/i,
-        /\besc to cancel\b/i,
-      ],
-      done: [/\b(done|completed|finished)\b/i],
-    },
     permission: [
       /apply this change\?/i,
       /allow execution( of)?/i,
