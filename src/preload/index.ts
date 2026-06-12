@@ -9,7 +9,13 @@ import {
   type SessionExitMsg,
   type SessionInputMsg,
   type SessionResizeMsg,
+  type SessionSpawnMsg,
+  type PermissionPendingMsg,
+  type PermissionResolvedMsg,
+  type PermissionRespondedMsg,
+  type PermissionRespondMsg,
 } from "../shared/ipc";
+import type { AppSettings, PermissionAction } from "../shared/types";
 
 /**
  * The preload bridge — the ONLY surface that crosses from main to the renderer
@@ -61,6 +67,15 @@ const api = {
   close(id: string): void {
     ipcRenderer.send(IPC.sessionClose, id);
   },
+  remove(id: string): void {
+    ipcRenderer.send(IPC.sessionRemove, id);
+  },
+  spawn(opts: SessionSpawnMsg): Promise<SessionInfo | null> {
+    return ipcRenderer.invoke(IPC.sessionSpawn, opts);
+  },
+  onFocusSession(callback: (id: string) => void): () => void {
+    return subscribe<string>(IPC.sessionFocus, callback);
+  },
 
   // --- the words ---
   onState(callback: (msg: SessionStateMsg) => void): () => void {
@@ -68,6 +83,39 @@ const api = {
   },
   onEvent(callback: (msg: SessionEventMsg) => void): () => void {
     return subscribe<SessionEventMsg>(IPC.sessionEvent, callback);
+  },
+
+  // --- permission control plane (Phase 3) ---
+  onPermissionPending(
+    callback: (msg: PermissionPendingMsg) => void,
+  ): () => void {
+    return subscribe<PermissionPendingMsg>(IPC.permissionPending, callback);
+  },
+  onPermissionResolved(
+    callback: (msg: PermissionResolvedMsg) => void,
+  ): () => void {
+    return subscribe<PermissionResolvedMsg>(IPC.permissionResolved, callback);
+  },
+  onPermissionResponded(
+    callback: (msg: PermissionRespondedMsg) => void,
+  ): () => void {
+    return subscribe<PermissionRespondedMsg>(IPC.permissionResponded, callback);
+  },
+  respondPermission(
+    id: string,
+    permissionId: string,
+    action: PermissionAction,
+  ): void {
+    ipcRenderer.send(IPC.permissionRespond, {
+      id,
+      permissionId,
+      action,
+    } satisfies PermissionRespondMsg);
+  },
+
+  // --- settings ---
+  updateSettings(settings: AppSettings): void {
+    ipcRenderer.send(IPC.settingsUpdate, settings);
   },
 };
 

@@ -2,11 +2,15 @@ import { join } from "node:path";
 import { app, shell, BrowserWindow, ipcMain } from "electron";
 import { SessionManager, type SessionSink } from "./sessionManager";
 import { IpcServer } from "./ipcServer";
+import { NotificationCenter } from "./notifications";
 import {
   IPC,
   type SessionInputMsg,
   type SessionResizeMsg,
+  type SessionSpawnMsg,
+  type PermissionRespondMsg,
 } from "../shared/ipc";
+import type { AppSettings } from "../shared/types";
 
 /**
  * Electron main: the single PRIMARY that owns the window and every PTY. Relay
@@ -17,6 +21,7 @@ import {
 let mainWindow: BrowserWindow | null = null;
 let ipcServer: IpcServer | null = null;
 let sessionManager: SessionManager | null = null;
+let notifications: NotificationCenter | null = null;
 
 // Single instance: only one primary may own the socket + window. A second
 // `agentwatch …` boots Electron, which quits here and lets the relay connect to
@@ -31,6 +36,16 @@ function sendToRenderer(channel: string, payload: unknown): void {
   }
 }
 
+/** Bring the window forward and switch the renderer to a given session. */
+function focusSession(sessionId: string): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    sendToRenderer(IPC.sessionFocus, sessionId);
+  }
+}
+
 function createWindow(): void {
   const win = new BrowserWindow({
     width: 1240,
@@ -38,7 +53,7 @@ function createWindow(): void {
     minWidth: 960,
     minHeight: 600,
     show: false,
-    backgroundColor: "#0F1117",
+    backgroundColor: "#1F1E1D",
     title: "AgentWatch",
     autoHideMenuBar: true,
     webPreferences: {
@@ -85,11 +100,31 @@ app.whenReady().then(() => {
     },
     onListChanged: () =>
       sendToRenderer(IPC.sessionsList, sessionManager?.list() ?? []),
+    onPermissionPending: (id, permission) => {
+      sendToRenderer(IPC.permissionPending, { id, permission });
+      notifications?.notify(id, permission);
+    },
+    onPermissionResolved: (id, permissionId) =>
+      sendToRenderer(IPC.permissionResolved, { id, permissionId }),
+    onPermissionResponded: (id, responded) =>
+      sendToRenderer(IPC.permissionResponded, { id, responded }),
   };
 
   sessionManager = new SessionManager(sink);
   ipcServer = new IpcServer(sessionManager);
   ipcServer.listen();
+
+  notifications = new NotificationCenter(
+    {
+      focus: (sessionId) => focusSession(sessionId),
+      respond: (sessionId, permissionId, action) =>
+        sessionManager?.respond(sessionId, permissionId, action),
+      label: (sessionId) =>
+        sessionManager?.list().find((s) => s.id === sessionId)?.commandLine ??
+        "agent",
+    },
+    sessionManager.getSettings(),
+  );
 
   // ---- Renderer IPC (architecture §11). All traffic crosses the preload bridge.
   ipcMain.handle(IPC.sessionsGet, () => sessionManager?.list() ?? []);
@@ -101,6 +136,35 @@ app.whenReady().then(() => {
     sessionManager?.setViewerSize(m.id, "gui", m.cols, m.rows),
   );
   ipcMain.on(IPC.sessionClose, (_e, id: string) => sessionManager?.kill(id));
+  ipcMain.on(IPC.sessionRemove, (_e, id: string) => sessionManager?.remove(id));
+
+  // Spawn a brand-new agent/terminal straight from the GUI (no native relay).
+  ipcMain.handle(IPC.sessionSpawn, (_e, m: SessionSpawnMsg) => {
+    if (!sessionManager) return null;
+    const command = (m.command || "").trim();
+    if (!command) return null;
+    return sessionManager.create(
+      {
+        command,
+        args: Array.isArray(m.args) ? m.args : [],
+        cwd: m.cwd || app.getPath("home"),
+        cols: m.cols,
+        rows: m.rows,
+      },
+      "gui",
+    );
+  });
+
+  // Permission control plane: answer a pending prompt (Allow/Deny/choice/custom).
+  ipcMain.on(IPC.permissionRespond, (_e, m: PermissionRespondMsg) =>
+    sessionManager?.respond(m.id, m.permissionId, m.action),
+  );
+
+  // Settings: keep main + notifications in sync with the renderer's choices.
+  ipcMain.on(IPC.settingsUpdate, (_e, s: AppSettings) => {
+    sessionManager?.updateSettings(s);
+    notifications?.updateSettings(s);
+  });
 
   createWindow();
 

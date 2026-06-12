@@ -5,6 +5,7 @@ import type { AgentState, FeedEvent } from "../../../shared/types";
 function toneFor(event: FeedEvent): string {
   if (event.kind === "permission_needed") return "tone-amber";
   if (event.kind === "session_end") return "tone-neutral";
+  if (event.kind === "verdict") return event.state ? "tone-green" : "tone-red";
   const state: AgentState | undefined = event.state;
   switch (state) {
     case "reading":

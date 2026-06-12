@@ -6,6 +6,8 @@ interface TerminalsLayerProps {
   manager: TerminalManager;
   /** Report the GUI viewer's fitted size for the active session (size negotiation). */
   onGuiSize: (id: string, cols: number, rows: number) => void;
+  /** Open the New Terminal dialog (shown as a CTA when there are no agents). */
+  onNewTerminal: () => void;
 }
 
 /**
@@ -18,6 +20,7 @@ interface TerminalsLayerProps {
 export function TerminalsLayer({
   manager,
   onGuiSize,
+  onNewTerminal,
 }: TerminalsLayerProps): JSX.Element {
   const sessions = useSessions((s) => s.sessions);
   const activeId = useSessions((s) => s.activeId);
@@ -66,6 +69,9 @@ export function TerminalsLayer({
             Run <code>agentwatch &lt;cli&gt;</code> in any terminal — it appears
             here and mirrors in that terminal too.
           </p>
+          <button className="empty-cta" onClick={onNewTerminal}>
+            + New terminal
+          </button>
         </div>
       )}
       {sessions.map((s) => (

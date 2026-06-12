@@ -3,7 +3,15 @@
  * and the React renderer (architecture doc §11), now session-keyed for the
  * multi-agent model. No runtime dependencies — safe to import from any side.
  */
-import type { AgentState, FeedEvent, SessionInfo } from "./types";
+import type {
+  AgentState,
+  AppSettings,
+  FeedEvent,
+  PendingPermission,
+  PermissionAction,
+  RespondedPermission,
+  SessionInfo,
+} from "./types";
 
 /** Channel names — the complete main<->renderer surface. */
 export const IPC = {
@@ -25,8 +33,27 @@ export const IPC = {
   sessionInput: "session:input",
   /** renderer -> main (event): the GUI view's size for a session (size negotiation). */
   sessionResize: "session:resize",
-  /** renderer -> main (event): kill a session. */
+  /** renderer -> main (event): kill a session (terminate the process). */
   sessionClose: "session:close",
+  /** renderer -> main (event): remove an already-ended session from the list. */
+  sessionRemove: "session:remove",
+  /** renderer -> main (invoke): spawn a brand-new session from the GUI. */
+  sessionSpawn: "session:spawn",
+  /** main -> renderer (event): focus/switch to a session (e.g. notification click). */
+  sessionFocus: "session:focus",
+
+  // ---- Phase 3: permission control plane ----
+  /** main -> renderer (event): a new pending permission for a session. */
+  permissionPending: "permission:pending",
+  /** main -> renderer (event): a pending permission was cleared (answered elsewhere). */
+  permissionResolved: "permission:resolved",
+  /** main -> renderer (event): a permission moved to the Responded/audit list. */
+  permissionResponded: "permission:responded",
+  /** renderer -> main (event): answer a pending permission (Allow/Deny/choice/custom). */
+  permissionRespond: "permission:respond",
+
+  /** renderer -> main (event): user settings changed. */
+  settingsUpdate: "settings:update",
 } as const;
 
 /** Terminal dimensions in character cells. */
@@ -75,4 +102,43 @@ export interface SessionResizeMsg {
   rows: number;
 }
 
-export type { AgentState, FeedEvent, SessionInfo };
+/** renderer -> main (invoke): create a new GUI-owned session. */
+export interface SessionSpawnMsg {
+  command: string;
+  args: string[];
+  cwd?: string;
+  cols: number;
+  rows: number;
+}
+
+/** main -> renderer: a permission is now pending for a session. */
+export interface PermissionPendingMsg {
+  id: string;
+  permission: PendingPermission;
+}
+/** main -> renderer: a pending permission was cleared without an explicit verdict. */
+export interface PermissionResolvedMsg {
+  id: string;
+  permissionId: string;
+}
+/** main -> renderer: a permission has a recorded verdict. */
+export interface PermissionRespondedMsg {
+  id: string;
+  responded: RespondedPermission;
+}
+/** renderer -> main: answer a pending permission. */
+export interface PermissionRespondMsg {
+  id: string;
+  permissionId: string;
+  action: PermissionAction;
+}
+
+export type {
+  AgentState,
+  AppSettings,
+  FeedEvent,
+  PendingPermission,
+  PermissionAction,
+  RespondedPermission,
+  SessionInfo,
+};

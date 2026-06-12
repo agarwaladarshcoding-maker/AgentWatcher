@@ -99,6 +99,13 @@ export class TerminalManager {
     this.entries.delete(id);
   }
 
+  /** Dispose any terminals whose session is no longer present (removed/dismissed). */
+  pruneExcept(keep: Set<string>): void {
+    for (const id of [...this.entries.keys()]) {
+      if (!keep.has(id)) this.dispose(id);
+    }
+  }
+
   disposeAll(): void {
     for (const id of [...this.entries.keys()]) this.dispose(id);
   }

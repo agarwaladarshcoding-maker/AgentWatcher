@@ -1,9 +1,14 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSessions } from "./store/sessions";
+import { useSettings } from "./store/settings";
 import { TerminalManager } from "./terminal/manager";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalsLayer } from "./components/TerminalsLayer";
 import { EventFeed } from "./components/EventFeed";
+import { NotificationPanel } from "./components/NotificationPanel";
+import { NewTerminalModal } from "./components/NewTerminalModal";
+import { SettingsModal } from "./components/SettingsModal";
+import { HistoryModal } from "./components/HistoryModal";
 import type { AgentState } from "../../shared/types";
 
 const STATE_LABEL: Record<AgentState, string> = {
@@ -15,19 +20,60 @@ const STATE_LABEL: Record<AgentState, string> = {
   done: "Done",
 };
 
+/** A soft two-note chime via WebAudio (no asset needed). */
+function playChime(): void {
+  try {
+    const Ctx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext })
+        .webkitAudioContext;
+    const ctx = new Ctx();
+    const now = ctx.currentTime;
+    [880, 1320].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = freq;
+      osc.type = "sine";
+      const t = now + i * 0.12;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.12, t + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.2);
+    });
+    setTimeout(() => void ctx.close(), 600);
+  } catch {
+    /* audio not available */
+  }
+}
+
+type ModalKind = "newTerminal" | "settings" | "history" | null;
+
 /**
- * The one window for all agents: sidebar (list + search + switch) · the active
- * agent's mirror · its event feed. Terminal output is routed straight into the
- * imperative TerminalManager and never enters React state (§18).
+ * The one window for all agents: sidebar (list + search + switch + new) · the
+ * active agent's mirror · its event feed + permission control plane. Terminal
+ * output is routed straight into the imperative TerminalManager and never
+ * enters React state (§18).
  */
 function App(): JSX.Element {
   const sessions = useSessions((s) => s.sessions);
   const activeId = useSessions((s) => s.activeId);
   const states = useSessions((s) => s.states);
+  const pending = useSessions((s) => s.pending);
   const setSessions = useSessions((s) => s.setSessions);
+  const setActive = useSessions((s) => s.setActive);
   const applyState = useSessions((s) => s.applyState);
   const addEvent = useSessions((s) => s.addEvent);
   const applyExit = useSessions((s) => s.applyExit);
+  const addPending = useSessions((s) => s.addPending);
+  const removePending = useSessions((s) => s.removePending);
+  const addResponded = useSessions((s) => s.addResponded);
+
+  const syncSettings = useSettings((s) => s.sync);
+  const soundEnabled = useSettings((s) => s.settings.sound);
+
+  const [modal, setModal] = useState<ModalKind>(null);
 
   const managerRef = useRef<TerminalManager | null>(null);
   if (!managerRef.current) {
@@ -37,7 +83,13 @@ function App(): JSX.Element {
   }
   const manager = managerRef.current;
 
+  // Keep the latest sound preference in a ref so the stable subscription can read it.
+  const soundRef = useRef(soundEnabled);
+  soundRef.current = soundEnabled;
+
   useEffect(() => {
+    syncSettings();
+
     window.agentwatch
       .getSessions()
       .then((list) => setSessions(list))
@@ -63,6 +115,19 @@ function App(): JSX.Element {
       );
     });
 
+    const offPending = window.agentwatch.onPermissionPending((m) => {
+      addPending(m.id, m.permission);
+      if (soundRef.current) playChime();
+    });
+    const offResolved = window.agentwatch.onPermissionResolved((m) =>
+      removePending(m.id, m.permissionId),
+    );
+    const offResponded = window.agentwatch.onPermissionResponded((m) => {
+      removePending(m.id, m.responded.id);
+      addResponded(m.id, m.responded);
+    });
+    const offFocus = window.agentwatch.onFocusSession((id) => setActive(id));
+
     return () => {
       offSessions();
       offData();
@@ -70,8 +135,28 @@ function App(): JSX.Element {
       offState();
       offEvent();
       offExit();
+      offPending();
+      offResolved();
+      offResponded();
+      offFocus();
     };
-  }, [manager, setSessions, applyState, addEvent, applyExit]);
+  }, [
+    manager,
+    syncSettings,
+    setSessions,
+    setActive,
+    applyState,
+    addEvent,
+    applyExit,
+    addPending,
+    removePending,
+    addResponded,
+  ]);
+
+  // Crash-safety: dispose terminals whose session was removed/dismissed.
+  useEffect(() => {
+    manager.pruneExcept(new Set(sessions.map((s) => s.id)));
+  }, [sessions, manager]);
 
   useEffect(() => () => manager.disposeAll(), [manager]);
 
@@ -89,25 +174,39 @@ function App(): JSX.Element {
     : "idle";
 
   const running = sessions.filter((s) => !s.ended).length;
-  const waiting = sessions.filter(
-    (s) => !s.ended && (states[s.id] ?? s.state) === "waiting",
-  ).length;
+  const totalPending = Object.values(pending).reduce(
+    (sum, list) => sum + list.length,
+    0,
+  );
 
   return (
     <div className="shell">
       <header className="topbar">
         <span className="logo-dot" aria-hidden="true" />
         <span className="app-name">AgentWatch</span>
+        <span className="topbar-spacer" />
         <span className="status-badge live" role="status">
           {running} running
         </span>
-        {waiting > 0 && (
-          <span className="status-badge waiting">{waiting} waiting</span>
+        {totalPending > 0 && (
+          <span className="status-badge pending">{totalPending} pending</span>
         )}
+        <button
+          className="topbar-btn primary"
+          onClick={() => setModal("newTerminal")}
+        >
+          + New terminal
+        </button>
+        <button className="topbar-btn" onClick={() => setModal("history")}>
+          History
+        </button>
+        <button className="topbar-btn" onClick={() => setModal("settings")}>
+          Settings
+        </button>
       </header>
 
       <div className="layout">
-        <Sidebar />
+        <Sidebar onNewTerminal={() => setModal("newTerminal")} />
 
         <main className="center-col">
           <div className="agent-header">
@@ -136,13 +235,24 @@ function App(): JSX.Element {
             )}
           </div>
 
-          <TerminalsLayer manager={manager} onGuiSize={onGuiSize} />
+          <TerminalsLayer
+            manager={manager}
+            onGuiSize={onGuiSize}
+            onNewTerminal={() => setModal("newTerminal")}
+          />
         </main>
 
         <aside className="right-col">
           <EventFeed />
+          <NotificationPanel />
         </aside>
       </div>
+
+      {modal === "newTerminal" && (
+        <NewTerminalModal onClose={() => setModal(null)} />
+      )}
+      {modal === "settings" && <SettingsModal onClose={() => setModal(null)} />}
+      {modal === "history" && <HistoryModal onClose={() => setModal(null)} />}
     </div>
   );
 }

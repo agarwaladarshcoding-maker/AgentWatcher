@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useSessions } from "../store/sessions";
-import type { AgentState } from "../../../shared/types";
+import { ConfirmDialog } from "./ConfirmDialog";
+import type { AgentState, SessionInfo } from "../../../shared/types";
 
 const STATE_LABEL: Record<AgentState, string> = {
   idle: "Idle",
@@ -13,15 +14,24 @@ const STATE_LABEL: Record<AgentState, string> = {
 
 /**
  * Left sidebar: every running/finished agent, a search box to filter by the CLI
- * tool's name, and one-click switching. The active agent is highlighted.
+ * tool's name, one-click switching, a "+" to start a new terminal, a pending
+ * pip per agent, and a safe close button (warns before terminating a live
+ * session; just dismisses an ended one).
  */
-export function Sidebar(): JSX.Element {
+export function Sidebar({
+  onNewTerminal,
+}: {
+  onNewTerminal: () => void;
+}): JSX.Element {
   const sessions = useSessions((s) => s.sessions);
   const activeId = useSessions((s) => s.activeId);
   const states = useSessions((s) => s.states);
+  const pending = useSessions((s) => s.pending);
   const setActive = useSessions((s) => s.setActive);
 
   const [query, setQuery] = useState("");
+  const [confirm, setConfirm] = useState<SessionInfo | null>(null);
+
   const q = query.trim().toLowerCase();
   const filtered = q
     ? sessions.filter(
@@ -32,13 +42,25 @@ export function Sidebar(): JSX.Element {
       )
     : sessions;
 
-  const close = (id: string): void => window.agentwatch.close(id);
+  // Ended → dismiss (remove the record). Running → confirm before terminating.
+  const onClose = (s: SessionInfo): void => {
+    if (s.ended) window.agentwatch.remove(s.id);
+    else setConfirm(s);
+  };
 
   return (
     <nav className="sidebar" aria-label="Agents">
       <div className="sidebar-head">
         <span className="sidebar-title">Agents</span>
         <span className="sidebar-count">{sessions.length}</span>
+        <button
+          className="new-terminal-btn"
+          onClick={onNewTerminal}
+          aria-label="New terminal"
+          title="New terminal"
+        >
+          +
+        </button>
       </div>
 
       <div className="search">
@@ -75,10 +97,13 @@ export function Sidebar(): JSX.Element {
               ? "done"
               : (states[s.id] ?? s.state);
             const live = !s.ended && state !== "idle";
+            const pendingCount = pending[s.id]?.length ?? 0;
             return (
               <li
                 key={s.id}
-                className={`agent-item ${s.id === activeId ? "active" : ""}`}
+                className={`agent-item ${s.id === activeId ? "active" : ""} ${
+                  s.ended ? "ended" : ""
+                }`}
               >
                 <button
                   className="agent-item-btn"
@@ -95,15 +120,25 @@ export function Sidebar(): JSX.Element {
                       {s.ended ? `exited (${s.exitCode ?? 0})` : `pid ${s.pid}`}
                     </span>
                   </span>
-                  <span className={`state-pill state-${state}`}>
-                    {s.ended ? "Done" : STATE_LABEL[state]}
+                  <span className="agent-item-badges">
+                    {pendingCount > 0 && (
+                      <span
+                        className="pending-pip"
+                        title={`${pendingCount} pending`}
+                      >
+                        {pendingCount}
+                      </span>
+                    )}
+                    <span className={`state-pill state-${state}`}>
+                      {s.ended ? "Done" : STATE_LABEL[state]}
+                    </span>
                   </span>
                 </button>
                 <button
                   className="agent-close"
-                  onClick={() => close(s.id)}
-                  aria-label={`Close ${s.command}`}
-                  title="Close session"
+                  onClick={() => onClose(s)}
+                  aria-label={s.ended ? `Dismiss ${s.command}` : `Close ${s.command}`}
+                  title={s.ended ? "Dismiss from list" : "Terminate session"}
                 >
                   ×
                 </button>
@@ -112,6 +147,21 @@ export function Sidebar(): JSX.Element {
           })
         )}
       </ul>
+
+      {confirm && (
+        <ConfirmDialog
+          title="Terminate session?"
+          message={`This will stop "${confirm.commandLine}" (pid ${confirm.pid}).`}
+          warn={
+            confirm.nativeAttached
+              ? "It is also mirrored in a native terminal — that terminal will end too."
+              : undefined
+          }
+          confirmLabel="Terminate"
+          onConfirm={() => window.agentwatch.close(confirm.id)}
+          onClose={() => setConfirm(null)}
+        />
+      )}
     </nav>
   );
 }

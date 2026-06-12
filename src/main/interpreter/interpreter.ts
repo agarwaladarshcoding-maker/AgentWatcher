@@ -1,10 +1,16 @@
 import stripAnsi from "strip-ansi";
-import type { AgentState, FeedEvent } from "../../shared/types";
+import type {
+  AgentState,
+  FeedEvent,
+  PendingPermission,
+  PermissionChoice,
+} from "../../shared/types";
 import type { AgentProfile } from "./profiles/types";
 
 /**
  * The interpreter turns a tee'd, ANSI-stripped copy of the PTY stream into
- * structured state + feed events — "the words" (architecture doc §4.2, §20).
+ * structured state + feed events + permission prompts — "the words"
+ * (architecture doc §4.2, §4.3, §20).
  *
  * Invariants it must honor (§18):
  *   - Runs on a COPY only. Never mutates, delays, buffers, or reorders the
@@ -14,8 +20,10 @@ import type { AgentProfile } from "./profiles/types";
  * State resolution is most-specific-wins (§21):
  *   permission > waiting > writing > thinking > reading > done > idle
  *
- * For reading/writing it also extracts the file being touched so the event feed
- * can say *which* file (e.g. "Reading · src/auth/login.js").
+ * Permission handling (Phase 3): when a permission/choice prompt is detected it
+ * emits a structured PendingPermission (with parsed options when it's a menu).
+ * It resolves the pending one when the agent visibly moves on (a non-waiting
+ * state), so a prompt answered directly in the terminal also clears the panel.
  */
 const STATE_PRIORITY: AgentState[] = [
   "waiting",
@@ -39,9 +47,17 @@ const STATE_TITLES: Record<AgentState, string> = {
 // (so version numbers like "v1.0" are not mistaken for files).
 const FILE_TOKEN = /[^\s"'`()[\]]+\.[A-Za-z][A-Za-z0-9]{0,7}\b/g;
 
+// A numbered menu option line, e.g. "  1. Full Search", "❯ 2. Yes", "● 3. …".
+// Leading box/markers are stripped before matching.
+const CHOICE_LINE = /^[●❯>*\-]?\s*(\d{1,2})[.)]\s+(\S.*)$/;
+
 export interface InterpreterEmit {
   onState: (state: AgentState) => void;
   onEvent: (event: FeedEvent) => void;
+  /** A new permission prompt is blocking the agent. */
+  onPermission: (permission: PendingPermission) => void;
+  /** The active permission was cleared without an explicit UI verdict. */
+  onPermissionResolved: (permissionId: string) => void;
 }
 
 let sequence = 0;
@@ -58,7 +74,8 @@ export class Interpreter {
   private buffer = "";
   private currentState: AgentState | null = null;
   private lastTarget: string | null = null;
-  private lastPermissionHash: string | null = null;
+  private activePermission: PendingPermission | null = null;
+  private activePermissionHash: string | null = null;
   private static readonly MAX_BUFFER = 8192;
 
   constructor(
@@ -84,12 +101,20 @@ export class Interpreter {
         }
       }
 
-      const line = permissionMatch ? null : this.lastNonEmptyLine();
-      const next: AgentState | null = permissionMatch
-        ? "waiting"
-        : line
-          ? this.classify(line)
-          : null;
+      if (permissionMatch) {
+        this.notePermission(permissionMatch);
+        this.transition("waiting");
+        return;
+      }
+
+      const line = this.lastNonEmptyLine();
+      const next = line ? this.classify(line) : null;
+
+      // A concrete non-waiting state means the agent moved on → the prompt it
+      // was blocking on has been answered (in the terminal or by us).
+      if (next && next !== "waiting" && this.activePermission) {
+        this.resolveActivePermission();
+      }
 
       if (next) {
         const target =
@@ -98,8 +123,6 @@ export class Interpreter {
             : undefined;
         this.transition(next, target);
       }
-
-      if (permissionMatch) this.notePermission(permissionMatch);
     } catch {
       // Interpretation must never break the mirror.
     }
@@ -109,7 +132,8 @@ export class Interpreter {
     this.buffer = "";
     this.currentState = null;
     this.lastTarget = null;
-    this.lastPermissionHash = null;
+    this.activePermission = null;
+    this.activePermissionHash = null;
     this.emit.onEvent(
       makeEvent({
         kind: "session_start",
@@ -121,6 +145,7 @@ export class Interpreter {
   }
 
   sessionEnd(code: number, signal?: number): void {
+    if (this.activePermission) this.resolveActivePermission();
     const sig = signal ? `, signal ${signal}` : "";
     this.emit.onEvent(
       makeEvent({
@@ -130,6 +155,25 @@ export class Interpreter {
       }),
     );
     this.transition("done");
+  }
+
+  /**
+   * Called when the UI (or terminal) has answered the active permission, so the
+   * interpreter forgets it and can detect the next prompt cleanly.
+   */
+  acknowledgeResolved(permissionId: string): void {
+    if (this.activePermission && this.activePermission.id === permissionId) {
+      this.activePermission = null;
+      this.activePermissionHash = null;
+    }
+  }
+
+  private resolveActivePermission(): void {
+    const p = this.activePermission;
+    if (!p) return;
+    this.activePermission = null;
+    this.activePermissionHash = null;
+    this.emit.onPermissionResolved(p.id);
   }
 
   private lastNonEmptyLine(): string | null {
@@ -154,6 +198,35 @@ export class Interpreter {
     if (!tokens || tokens.length === 0) return undefined;
     // The last token is usually the operand (e.g. "Reading file src/app.ts").
     return tokens[tokens.length - 1];
+  }
+
+  /** Parse a numbered menu out of the buffer tail (for "choice" prompts). */
+  private parseChoices(): PermissionChoice[] {
+    const lines = this.buffer.split(/\r?\n/);
+    const byNum = new Map<number, string>();
+    for (const raw of lines) {
+      const cleaned = raw.replace(/[│|┃╮╯╰╭┌┐└┘]/g, " ").trim();
+      const m = cleaned.match(CHOICE_LINE);
+      if (!m) continue;
+      const n = Number.parseInt(m[1], 10);
+      if (n < 1 || n > 12) continue;
+      // Trim long descriptions/hints so buttons stay compact.
+      const label = m[2].replace(/\s{2,}.*$/, "").replace(/\s+\(esc\)$/i, "").trim();
+      if (label) byNum.set(n, label.slice(0, 64));
+    }
+    if (byNum.size < 2) return [];
+    return [...byNum.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([n, label]) => ({ label: `${n}. ${label}`, send: `${n}\r` }));
+  }
+
+  /** A short, human-readable snapshot of the prompt for the card body. */
+  private promptSnapshot(): string {
+    const lines = this.buffer
+      .split(/\r?\n/)
+      .map((l) => l.replace(/[│|┃╮╯╰╭┌┐└┘]/g, "").trimEnd())
+      .filter((l) => l.trim() !== "");
+    return lines.slice(-6).join("\n").trim().slice(0, 600);
   }
 
   /**
@@ -182,16 +255,46 @@ export class Interpreter {
   }
 
   private notePermission(raw: string): void {
-    const hash = raw.trim().slice(0, 120);
-    if (hash === this.lastPermissionHash) return;
-    this.lastPermissionHash = hash;
+    const choices = this.parseChoices();
+    const snapshot = this.promptSnapshot();
+    const hash = `${raw.trim().slice(0, 120)}::${choices.length}`;
+    if (hash === this.activePermissionHash) return; // same prompt still showing
+    if (this.activePermission) this.resolveActivePermission(); // a new prompt replaced it
+    this.activePermissionHash = hash;
+
+    const kind: PendingPermission["kind"] = choices.length >= 2 ? "choice" : "confirm";
+    const permission: PendingPermission = {
+      id: nextId(),
+      ts: Date.now(),
+      title: this.permissionTitle(raw, kind),
+      source: this.profile.name,
+      rawPrompt: snapshot || raw.trim(),
+      kind,
+      choices: kind === "choice" ? choices : undefined,
+      allowInput: this.profile.responses.allow,
+      denyInput: this.profile.responses.deny,
+    };
+    this.activePermission = permission;
+
+    this.emit.onPermission(permission);
     this.emit.onEvent(
       makeEvent({
         kind: "permission_needed",
         state: "waiting",
-        title: "Permission needed",
-        detail: hash,
+        title: permission.title,
+        detail: raw.trim().slice(0, 120),
       }),
     );
+  }
+
+  private permissionTitle(raw: string, kind: PendingPermission["kind"]): string {
+    const lower = raw.toLowerCase();
+    if (/\b(write|edit|create|replace|patch|apply)\b/.test(lower))
+      return "Write permission needed";
+    if (/\b(run|execute|exec|command|shell)\b/.test(lower))
+      return "Run permission needed";
+    if (/\bdelete|remove\b/.test(lower)) return "Delete permission needed";
+    if (kind === "choice") return "Agent needs a decision";
+    return "Permission needed";
   }
 }

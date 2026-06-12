@@ -213,10 +213,12 @@ Each phase has a hard **exit criterion**. We do not start the next phase until t
 ### Phase 3 — Permission control plane
 
 - Goal: the Allow/Deny loop works end-to-end against a real agent.
-    - [ ]  Detect permission prompts → create pending notification
-    - [ ]  Allow/Deny writes correct input to PTY stdin
-    - [ ]  Verdict moves item to Responded tab + logs it
-    - [ ]  Manual typing in the mirror still works as fallback
+    - [x]  Detect permission prompts → create pending notification
+    - [x]  Allow/Deny writes correct input to PTY stdin
+    - [x]  Verdict moves item to Responded tab + logs it
+    - [x]  Manual typing in the mirror still works as fallback
+    - [x]  Numbered "choice" prompts (Gemini/Claude menus) parsed into one button per option, plus a free-text custom response (antigravity-style)
+    - [x]  OS notifications: click → focus + switch session; macOS Allow/Deny actions + inline reply
     
     **Exit criterion:** A real agent's permission prompt can be answered from the UI and the session continues correctly.
     
@@ -238,7 +240,10 @@ Each phase has a hard **exit criterion**. We do not start the next phase until t
 - Explicitly NOT in v1 — parked here so we don't drift.
     - [x]  Multi-agent switching + multiple concurrent PTYs *(pulled forward — see §28)*
     - [x]  Search (filter agents by CLI name) *(pulled forward — see §28)*
-    - [ ]  User-editable profiles / pattern UI
+    - [x]  Start a new terminal/agent directly from the app (GUI-owned PTY)
+    - [x]  User-editable responses + settings (Allow/Deny bytes, notifications, sound)
+    - [x]  Session history view (in-app; SQLite audit log still pending in Phase 4)
+    - [ ]  Full user-editable profiles / pattern UI
     - [ ]  Session replay, export
     - [ ]  Remote/headless watching
 
