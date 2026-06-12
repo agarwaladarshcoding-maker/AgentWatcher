@@ -69,6 +69,26 @@ class SqliteAuditStore implements AuditStore {
   }
 
   private migrate(): void {
+    // Versioned schema. If a DB from a different/older schema exists (e.g. a
+    // prior build wrote different columns), rebuild our tables cleanly rather
+    // than fail every query with "no such column".
+    const SCHEMA_VERSION = 1;
+    let current = 0;
+    try {
+      current = this.db.pragma("user_version", { simple: true }) as number;
+    } catch {
+      current = 0;
+    }
+
+    const expected = this.tablesMatchExpected();
+    if (current !== SCHEMA_VERSION || !expected) {
+      this.db.exec(`
+        DROP TABLE IF EXISTS verdicts;
+        DROP TABLE IF EXISTS events;
+        DROP TABLE IF EXISTS sessions;
+      `);
+    }
+
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         key          TEXT PRIMARY KEY,
@@ -105,6 +125,28 @@ class SqliteAuditStore implements AuditStore {
       );
       CREATE INDEX IF NOT EXISTS idx_verdicts_skey ON verdicts(session_key);
     `);
+
+    try {
+      this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  /** True only if the `sessions` table already has our expected columns. */
+  private tablesMatchExpected(): boolean {
+    try {
+      const cols: Array<{ name: string }> = this.db
+        .prepare(`PRAGMA table_info(sessions)`)
+        .all();
+      if (cols.length === 0) return true; // fresh DB; nothing to reconcile
+      const names = new Set(cols.map((c) => c.name));
+      return ["key", "session_id", "command_line", "started_at"].every((c) =>
+        names.has(c),
+      );
+    } catch {
+      return false;
+    }
   }
 
   sessionStarted(info: SessionInfo): void {

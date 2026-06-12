@@ -126,6 +126,25 @@ export function HistoryModal({
 
                 {isOpen && (
                   <div className="history-detail">
+                    <div className="history-export">
+                      <span className="field-hint">Export this session:</span>
+                      <button
+                        className="btn"
+                        onClick={() =>
+                          window.agentwatch.exportHistory(s.key, "json")
+                        }
+                      >
+                        JSON
+                      </button>
+                      <button
+                        className="btn"
+                        onClick={() =>
+                          window.agentwatch.exportHistory(s.key, "md")
+                        }
+                      >
+                        Markdown
+                      </button>
+                    </div>
                     {detail === null ? (
                       <p className="field-hint">Loading timeline…</p>
                     ) : detail.events.length === 0 &&

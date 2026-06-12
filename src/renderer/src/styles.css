@@ -1,42 +1,44 @@
 /*
- * AgentWatch universal design system (architecture doc §16), tuned to a warm,
- * Claude-like identity: clay/coral accent, warm cream surfaces (never stark
- * white), warm-dark terminal hero. Keep these tokens in sync with
- * src/renderer/src/theme.ts (xterm colors).
+ * AgentWatch universal design system (architecture doc §16), tuned to Claude's
+ * DARK identity: clay/coral accent on warm near-black surfaces, the terminal as
+ * a seamless hero. Keep these tokens in sync with src/renderer/src/theme.ts
+ * (xterm colors).
  */
 :root {
-  --accent: #c96442;
-  --accent-strong: #b4512f;
-  --accent-soft: #f3e6df;
-  --accent-border: #e6cdc1;
+  color-scheme: dark;
 
-  --app-bg: #efece3;
-  --surface-1: #faf9f5;
-  --surface-2: #f0eee6;
-  --surface-3: #e8e5db;
-  --border: #e4dfd3;
-  --border-strong: #d8d2c4;
-  --text-1: #262624;
-  --text-2: #6b6862;
+  --accent: #d97757; /* Claude coral, brightened for dark */
+  --accent-strong: #c96442;
+  --accent-soft: #3a2b24; /* dark tinted accent wash */
+  --accent-border: #5a4035;
+
+  --app-bg: #1a1917; /* deepest warm black (window) */
+  --surface-1: #262624; /* panels / cards */
+  --surface-2: #2f2e2c; /* headers / inputs / hover */
+  --surface-3: #3a3935; /* active / stronger hover */
+  --border: #393834;
+  --border-strong: #4a4843;
+  --text-1: #ecebe3; /* warm near-white */
+  --text-2: #9d988d; /* warm secondary */
 
   --terminal-bg: #1f1e1d;
 
-  /* semantic state palette: bg / text / dot (warm-tuned) */
-  --blue-bg: #e7f0f9;
-  --blue-text: #2f6aa6;
+  /* semantic state palette for dark: dark tinted bg / bright text / dot */
+  --blue-bg: #1e2b3a;
+  --blue-text: #8fbce6;
   --blue-dot: #5c9cd6;
-  --amber-bg: #f8ecd9;
-  --amber-text: #8a5a14;
+  --amber-bg: #352a1a;
+  --amber-text: #e8b673;
   --amber-dot: #e0913a;
-  --green-bg: #e2f2ea;
-  --green-text: #1f7a5e;
+  --green-bg: #1b2f28;
+  --green-text: #79cdac;
   --green-dot: #3fa985;
-  --red-bg: #fae9e7;
-  --red-text: #a83f3a;
+  --red-bg: #361f1e;
+  --red-text: #e89994;
   --red-dot: #d8615c;
-  --neutral-bg: #f0eee6;
-  --neutral-text: #6b6862;
-  --neutral-dot: #b8b4aa;
+  --neutral-bg: #2f2e2c;
+  --neutral-text: #9d988d;
+  --neutral-dot: #6f6c66;
 
   --radius-sm: 6px;
   --radius-md: 8px;
@@ -45,6 +47,29 @@
   font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 13px;
   color: var(--text-1);
+}
+
+/* Dark, unobtrusive scrollbars across the whole app (chrome + panels). */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface-3) transparent;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+  background-clip: padding-box;
 }
 
 * {
@@ -436,6 +461,35 @@ body,
 
 .terminal-host .xterm {
   height: 100%;
+}
+
+/* Stable, themed terminal scrollbar (fixes the flicker/overlap glitch). The
+   xterm DOM renderer owns .xterm-viewport; give it a thin warm-dark scrollbar
+   and a matching track so it never flashes a stark native bar over output. */
+.terminal-host .xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: #4a4843 var(--terminal-bg);
+  background-color: var(--terminal-bg) !important;
+}
+.terminal-host .xterm-viewport::-webkit-scrollbar {
+  width: 10px;
+}
+.terminal-host .xterm-viewport::-webkit-scrollbar-track {
+  background: var(--terminal-bg);
+}
+.terminal-host .xterm-viewport::-webkit-scrollbar-thumb {
+  background: #4a4843;
+  border-radius: 8px;
+  border: 2px solid var(--terminal-bg);
+  background-clip: padding-box;
+}
+.terminal-host .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: #5a5853;
+  background-clip: padding-box;
+}
+/* The xterm canvas/screen must not push its own scrollbar width into layout. */
+.terminal-host .xterm .xterm-screen {
+  overflow: visible;
 }
 
 .empty-stage {
@@ -1164,6 +1218,13 @@ body,
   align-items: center;
   gap: 8px;
   margin-top: 14px;
+}
+
+.history-export {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 
 .btn.danger {

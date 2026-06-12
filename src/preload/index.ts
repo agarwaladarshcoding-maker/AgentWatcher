@@ -133,6 +133,12 @@ const api = {
   clearHistory(): Promise<boolean> {
     return ipcRenderer.invoke(IPC.historyClear);
   },
+  exportHistory(
+    key: string,
+    format: "json" | "md",
+  ): Promise<{ ok: boolean; path?: string }> {
+    return ipcRenderer.invoke(IPC.historyExport, key, format);
+  },
 
   // --- debug ---
   sendDebugTestNotification(): void {

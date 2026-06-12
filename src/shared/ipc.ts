@@ -62,6 +62,8 @@ export const IPC = {
   historyDetail: "history:detail",
   /** renderer -> main (invoke): wipe the persisted history. */
   historyClear: "history:clear",
+  /** renderer -> main (invoke): export one session's timeline to a file. */
+  historyExport: "history:export",
 
   /** renderer -> main (event): trigger a fake notification for testing. */
   debugTestNotification: "debug:test-notification",

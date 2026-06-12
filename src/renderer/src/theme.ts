@@ -1,17 +1,17 @@
 /**
  * The single source of truth for AgentWatch colors (architecture doc §16.2),
- * tuned to a warm, Claude-like identity: clay/coral accent, warm cream surfaces
- * (never stark white), and a warm-dark terminal. These JS tokens mirror the CSS
- * custom properties in styles.css so the xterm terminal and the React chrome
- * share one universal palette.
+ * tuned to Claude's DARK identity: clay/coral accent on warm near-black
+ * surfaces, with the terminal as a seamless hero. These JS tokens mirror the
+ * CSS custom properties in styles.css so the xterm terminal and the React
+ * chrome share one universal palette.
  */
 export const COLORS = {
-  accent: "#C96442", // Claude clay/coral
-  surface1: "#FAF9F5", // warm cream panels (replaces white)
-  surface2: "#F0EEE6", // headers / inputs / hover
-  border: "#E4DFD3", // warm hairline
-  text1: "#262624", // warm near-black
-  text2: "#6B6862", // warm secondary
+  accent: "#D97757", // Claude coral (dark)
+  surface1: "#262624", // warm near-black panels
+  surface2: "#2F2E2C", // headers / inputs / hover
+  border: "#393834", // warm hairline
+  text1: "#ECEBE3", // warm near-white
+  text2: "#9D988D", // warm secondary
 
   terminalBg: "#1F1E1D", // warm dark hero
   command: "#E6E4D9", // typed / echoed commands

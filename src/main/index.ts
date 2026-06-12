@@ -1,5 +1,6 @@
 import { join } from "node:path";
-import { app, shell, BrowserWindow, ipcMain } from "electron";
+import { writeFile } from "node:fs/promises";
+import { app, shell, BrowserWindow, ipcMain, dialog } from "electron";
 import { SessionManager, type SessionSink } from "./sessionManager";
 import { IpcServer } from "./ipcServer";
 import { NotificationCenter } from "./notifications";
@@ -11,7 +12,7 @@ import {
   type SessionSpawnMsg,
   type PermissionRespondMsg,
 } from "../shared/ipc";
-import type { AppSettings } from "../shared/types";
+import type { AppSettings, HistoryDetail } from "../shared/types";
 
 /**
  * Electron main: the single PRIMARY that owns the window and every PTY. Relay
@@ -24,6 +25,38 @@ let ipcServer: IpcServer | null = null;
 let sessionManager: SessionManager | null = null;
 let notifications: NotificationCenter | null = null;
 let auditStore: AuditStore | null = null;
+
+/** Keys (`${sessionId}:${permissionId}`) of every still-pending permission. */
+const pendingKeys = new Set<string>();
+
+// A stable app identity so OS notifications are attributed to AgentWatch (not
+// "Electron") and Windows can group/toast correctly.
+app.setName("AgentWatch");
+if (process.platform === "win32") app.setAppUserModelId("com.agentwatch.app");
+
+/** Reflect the pending count on the dock/taskbar badge; clear flash when empty. */
+function updateAttentionBadge(): void {
+  try {
+    app.setBadgeCount(pendingKeys.size);
+  } catch {
+    /* unsupported platform */
+  }
+  if (pendingKeys.size === 0 && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.flashFrame(false);
+  }
+}
+
+/** Never-miss fallback: bounce the dock (macOS) and flash the window/taskbar. */
+function flashAttention(): void {
+  try {
+    app.dock?.bounce("critical");
+  } catch {
+    /* macOS only */
+  }
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isFocused()) {
+    mainWindow.flashFrame(true);
+  }
+}
 
 // Single instance: only one primary may own the socket + window. A second
 // `agentwatch …` boots Electron, which quits here and lets the relay connect to
@@ -38,12 +71,56 @@ function sendToRenderer(channel: string, payload: unknown): void {
   }
 }
 
+/** Render a persisted session timeline as a readable Markdown report (Phase 5). */
+function renderSessionMarkdown(detail: HistoryDetail): string {
+  const s = detail.session;
+  const lines: string[] = [];
+  const when = (ts: number): string => new Date(ts).toLocaleString();
+  if (s) {
+    lines.push(`# AgentWatch session — ${s.commandLine}`, "");
+    lines.push(`- **Profile:** ${s.profile}`);
+    lines.push(`- **PID:** ${s.pid}`);
+    lines.push(`- **Started:** ${when(s.startedAt)}`);
+    lines.push(
+      `- **Ended:** ${s.endedAt ? `${when(s.endedAt)} (exit ${s.exitCode ?? 0})` : "still running"}`,
+    );
+    lines.push(`- **Events:** ${s.eventCount} · **Verdicts:** ${s.verdictCount}`, "");
+  }
+  if (detail.verdicts.length > 0) {
+    lines.push("## Verdicts", "");
+    for (const v of detail.verdicts) {
+      lines.push(`- \`${when(v.decidedAt)}\` **${v.label}** — ${v.title}`);
+    }
+    lines.push("");
+  }
+  lines.push("## Event timeline", "");
+  if (detail.events.length === 0) {
+    lines.push("_No recorded events._");
+  } else {
+    for (const e of detail.events) {
+      const detailText = e.detail ? ` — ${e.detail}` : "";
+      lines.push(`- \`${when(e.ts)}\` **${e.title}**${detailText}`);
+    }
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
 /** Bring the window forward and switch the renderer to a given session. */
 function focusSession(sessionId: string): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
+    mainWindow.moveTop();
     mainWindow.focus();
+    // On macOS, pull the whole app to the foreground (the click came from a
+    // notification, which does not steal focus on its own).
+    try {
+      app.focus({ steal: true });
+    } catch {
+      /* non-macOS */
+    }
+    mainWindow.flashFrame(false);
     sendToRenderer(IPC.sessionFocus, sessionId);
   }
 }
@@ -104,12 +181,22 @@ app.whenReady().then(() => {
       sendToRenderer(IPC.sessionsList, sessionManager?.list() ?? []),
     onPermissionPending: (id, permission) => {
       sendToRenderer(IPC.permissionPending, { id, permission });
+      pendingKeys.add(`${id}:${permission.id}`);
       notifications?.notify(id, permission);
+      updateAttentionBadge();
     },
-    onPermissionResolved: (id, permissionId) =>
-      sendToRenderer(IPC.permissionResolved, { id, permissionId }),
-    onPermissionResponded: (id, responded) =>
-      sendToRenderer(IPC.permissionResponded, { id, responded }),
+    onPermissionResolved: (id, permissionId) => {
+      sendToRenderer(IPC.permissionResolved, { id, permissionId });
+      pendingKeys.delete(`${id}:${permissionId}`);
+      notifications?.resolve(id, permissionId);
+      updateAttentionBadge();
+    },
+    onPermissionResponded: (id, responded) => {
+      sendToRenderer(IPC.permissionResponded, { id, responded });
+      pendingKeys.delete(`${id}:${responded.id}`);
+      notifications?.resolve(id, responded.id);
+      updateAttentionBadge();
+    },
   };
 
   // Phase 4: durable audit log + session history (best-effort; no-op if SQLite
@@ -128,6 +215,7 @@ app.whenReady().then(() => {
       label: (sessionId) =>
         sessionManager?.list().find((s) => s.id === sessionId)?.commandLine ??
         "agent",
+      flashAttention: () => flashAttention(),
     },
     sessionManager.getSettings(),
   );
@@ -189,6 +277,47 @@ app.whenReady().then(() => {
     return true;
   });
 
+  // Phase 5: export one session's timeline to JSON or Markdown (replay/share).
+  ipcMain.handle(
+    IPC.historyExport,
+    async (_e, key: string, format: "json" | "md") => {
+      if (!auditStore) return { ok: false as const };
+      const detail = auditStore.sessionDetail(key);
+      if (!detail.session) return { ok: false as const };
+
+      const safe =
+        detail.session.commandLine.replace(/[^a-z0-9.-]+/gi, "_").slice(0, 40) ||
+        "session";
+      const ext = format === "md" ? "md" : "json";
+      const defaultPath = join(
+        app.getPath("downloads"),
+        `agentwatch-${safe}-${detail.session.sessionId}.${ext}`,
+      );
+
+      const result = await dialog.showSaveDialog(mainWindow ?? undefined!, {
+        title: "Export session",
+        defaultPath,
+        filters:
+          format === "md"
+            ? [{ name: "Markdown", extensions: ["md"] }]
+            : [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (result.canceled || !result.filePath) return { ok: false as const };
+
+      const content =
+        format === "md"
+          ? renderSessionMarkdown(detail)
+          : JSON.stringify(detail, null, 2);
+      try {
+        await writeFile(result.filePath, content, "utf8");
+        return { ok: true as const, path: result.filePath };
+      } catch (error) {
+        console.error("[agentwatch] export failed:", error);
+        return { ok: false as const };
+      }
+    },
+  );
+
   // Debug: trigger a test notification.
   ipcMain.on(IPC.debugTestNotification, () => {
     const list = sessionManager?.list() ?? [];
@@ -221,6 +350,7 @@ app.on("second-instance", () => {
 });
 
 function shutdown(): void {
+  notifications?.clearAll();
   sessionManager?.killAll();
   ipcServer?.close();
   auditStore?.close();
