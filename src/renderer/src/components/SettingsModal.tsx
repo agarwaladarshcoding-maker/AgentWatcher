@@ -59,6 +59,15 @@ export function SettingsModal({
       </div>
 
       <div className="field">
+        <button
+          className="btn"
+          onClick={() => window.agentwatch.sendDebugTestNotification()}
+        >
+          Send test notification
+        </button>
+      </div>
+
+      <div className="field">
         <label className="field-label" htmlFor="set-allow">
           Allow sends (blank = agent default, usually <code>y</code>)
         </label>

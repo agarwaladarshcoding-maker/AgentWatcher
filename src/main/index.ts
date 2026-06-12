@@ -3,6 +3,7 @@ import { app, shell, BrowserWindow, ipcMain } from "electron";
 import { SessionManager, type SessionSink } from "./sessionManager";
 import { IpcServer } from "./ipcServer";
 import { NotificationCenter } from "./notifications";
+import { createAuditStore, type AuditStore } from "./store/db";
 import {
   IPC,
   type SessionInputMsg,
@@ -22,6 +23,7 @@ let mainWindow: BrowserWindow | null = null;
 let ipcServer: IpcServer | null = null;
 let sessionManager: SessionManager | null = null;
 let notifications: NotificationCenter | null = null;
+let auditStore: AuditStore | null = null;
 
 // Single instance: only one primary may own the socket + window. A second
 // `agentwatch …` boots Electron, which quits here and lets the relay connect to
@@ -110,7 +112,11 @@ app.whenReady().then(() => {
       sendToRenderer(IPC.permissionResponded, { id, responded }),
   };
 
-  sessionManager = new SessionManager(sink);
+  // Phase 4: durable audit log + session history (best-effort; no-op if SQLite
+  // is unavailable). Created before the manager so every session is recorded.
+  auditStore = createAuditStore(app.getPath("userData"));
+
+  sessionManager = new SessionManager(sink, auditStore);
   ipcServer = new IpcServer(sessionManager);
   ipcServer.listen();
 
@@ -166,6 +172,39 @@ app.whenReady().then(() => {
     notifications?.updateSettings(s);
   });
 
+  // Phase 4: history / audit-log queries (read-only from the renderer).
+  ipcMain.handle(IPC.historyQuery, (_e, limit?: number) =>
+    auditStore?.recentSessions(typeof limit === "number" ? limit : undefined) ??
+    [],
+  );
+  ipcMain.handle(IPC.historyDetail, (_e, key: string) =>
+    auditStore?.sessionDetail(key) ?? {
+      session: null,
+      events: [],
+      verdicts: [],
+    },
+  );
+  ipcMain.handle(IPC.historyClear, () => {
+    auditStore?.clear();
+    return true;
+  });
+
+  // Debug: trigger a test notification.
+  ipcMain.on(IPC.debugTestNotification, () => {
+    const list = sessionManager?.list() ?? [];
+    const sessionId = list[0]?.id || "test-session";
+    notifications?.notify(sessionId, {
+      id: "test-permission",
+      ts: Date.now(),
+      title: "Test Notification",
+      source: "AgentWatch Debug",
+      rawPrompt: "This is a test notification to verify the OS-level alert system.",
+      kind: "confirm",
+      allowInput: "y\n",
+      denyInput: "n\n",
+    });
+  });
+
   createWindow();
 
   app.on("activate", () => {
@@ -184,6 +223,8 @@ app.on("second-instance", () => {
 function shutdown(): void {
   sessionManager?.killAll();
   ipcServer?.close();
+  auditStore?.close();
+  auditStore = null;
 }
 
 app.on("before-quit", shutdown);

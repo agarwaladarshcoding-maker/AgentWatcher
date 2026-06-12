@@ -132,3 +132,29 @@ export const DEFAULT_SETTINGS: AppSettings = {
   allowInput: "",
   denyInput: "",
 };
+
+/**
+ * Phase 4 — persisted history. One row in the session-history list (SQLite
+ * audit log), with rolled-up event/verdict counts. Pure data, shared by main,
+ * preload, and renderer.
+ */
+export interface HistorySessionRow {
+  /** Stable key, unique across runs (runId:sessionId). */
+  key: string;
+  sessionId: string;
+  commandLine: string;
+  profile: string;
+  pid: number;
+  startedAt: number;
+  endedAt: number | null;
+  exitCode: number | null;
+  eventCount: number;
+  verdictCount: number;
+}
+
+/** The full persisted timeline of one historical session. */
+export interface HistoryDetail {
+  session: HistorySessionRow | null;
+  events: FeedEvent[];
+  verdicts: RespondedPermission[];
+}

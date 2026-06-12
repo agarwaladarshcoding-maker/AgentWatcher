@@ -1091,6 +1091,91 @@ body,
   color: var(--text-2);
 }
 
+/* Phase 4 — persisted history (expandable rows + timeline). */
+.history-item {
+  border-bottom: 0.5px solid var(--border);
+}
+
+.history-row-btn {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-bottom: none;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.history-row-btn:hover {
+  background: var(--surface-2);
+}
+
+.history-detail {
+  padding: 4px 4px 12px 26px;
+}
+
+.history-section {
+  margin-top: 8px;
+}
+
+.history-section-title {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+  margin-bottom: 4px;
+}
+
+.history-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+
+.history-line-title {
+  font-weight: 500;
+}
+
+.history-line-detail {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-2);
+  font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-line-time {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: var(--text-2);
+}
+
+.history-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.btn.danger {
+  color: #fff;
+  background: var(--red-dot, #e24b4a);
+  border-color: transparent;
+}
+
+.btn.danger:hover {
+  background: var(--red-text, #a32d2d);
+}
+
 .confirm-text {
   font-size: 13px;
   line-height: 1.5;

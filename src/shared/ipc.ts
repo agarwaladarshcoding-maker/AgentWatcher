@@ -54,6 +54,17 @@ export const IPC = {
 
   /** renderer -> main (event): user settings changed. */
   settingsUpdate: "settings:update",
+
+  // ---- Phase 4: persistence / audit log ----
+  /** renderer -> main (invoke): recent sessions from the SQLite audit log. */
+  historyQuery: "history:query",
+  /** renderer -> main (invoke): the full event + verdict timeline of one session. */
+  historyDetail: "history:detail",
+  /** renderer -> main (invoke): wipe the persisted history. */
+  historyClear: "history:clear",
+
+  /** renderer -> main (event): trigger a fake notification for testing. */
+  debugTestNotification: "debug:test-notification",
 } as const;
 
 /** Terminal dimensions in character cells. */

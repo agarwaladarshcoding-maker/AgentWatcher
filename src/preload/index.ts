@@ -15,7 +15,12 @@ import {
   type PermissionRespondedMsg,
   type PermissionRespondMsg,
 } from "../shared/ipc";
-import type { AppSettings, PermissionAction } from "../shared/types";
+import type {
+  AppSettings,
+  HistoryDetail,
+  HistorySessionRow,
+  PermissionAction,
+} from "../shared/types";
 
 /**
  * The preload bridge — the ONLY surface that crosses from main to the renderer
@@ -116,6 +121,22 @@ const api = {
   // --- settings ---
   updateSettings(settings: AppSettings): void {
     ipcRenderer.send(IPC.settingsUpdate, settings);
+  },
+
+  // --- history / audit log (Phase 4) ---
+  queryHistory(limit?: number): Promise<HistorySessionRow[]> {
+    return ipcRenderer.invoke(IPC.historyQuery, limit);
+  },
+  queryHistoryDetail(key: string): Promise<HistoryDetail> {
+    return ipcRenderer.invoke(IPC.historyDetail, key);
+  },
+  clearHistory(): Promise<boolean> {
+    return ipcRenderer.invoke(IPC.historyClear);
+  },
+
+  // --- debug ---
+  sendDebugTestNotification(): void {
+    ipcRenderer.send(IPC.debugTestNotification);
   },
 };
 

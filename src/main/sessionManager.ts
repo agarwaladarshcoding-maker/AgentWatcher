@@ -13,6 +13,7 @@ import type {
 } from "../shared/types";
 import { DEFAULT_SETTINGS } from "../shared/types";
 import type { PtyExitInfo } from "../shared/ipc";
+import type { AuditStore } from "./store/db";
 
 /**
  * SessionManager — owns every agent session (architecture multi-agent model).
@@ -61,7 +62,20 @@ export class SessionManager {
   private seq = 0;
   private settings: AppSettings = { ...DEFAULT_SETTINGS };
 
-  constructor(private readonly sink: SessionSink) {}
+  /**
+   * Optional durable audit log (Phase 4). Best-effort: every call is guarded
+   * inside the store itself, so persistence can never break a live session.
+   */
+  constructor(
+    private readonly sink: SessionSink,
+    private readonly store?: AuditStore,
+  ) {}
+
+  /** Emit a feed event to all viewers AND persist it to the audit log. */
+  private emitEvent(id: string, event: FeedEvent): void {
+    this.sink.onEvent(id, event);
+    this.store?.event(id, event);
+  }
 
   list(): SessionInfo[] {
     return [...this.sessions.values()].map((s) => ({ ...s.info }));
@@ -93,7 +107,7 @@ export class SessionManager {
         if (s) s.info.state = state;
         this.sink.onState(id, state);
       },
-      onEvent: (event) => this.sink.onEvent(id, event),
+      onEvent: (event) => this.emitEvent(id, event),
       onPermission: (permission) => {
         const s = this.sessions.get(id);
         if (s) {
@@ -155,6 +169,7 @@ export class SessionManager {
         this.sink.onPermissionResolved(id, pid);
       }
       interpreter.sessionEnd(exit.code, exit.signal);
+      this.store?.sessionEnded(id, exit.code);
       this.sink.onExit(id, exit);
       this.sink.onListChanged();
     });
@@ -169,6 +184,7 @@ export class SessionManager {
     });
     info.pid = pid;
     interpreter.sessionStart(pid, info.commandLine);
+    this.store?.sessionStarted(info);
     this.sink.onListChanged();
     return { ...info };
   }
@@ -244,7 +260,8 @@ export class SessionManager {
       label,
     };
     this.sink.onPermissionResponded(id, responded);
-    this.sink.onEvent(id, {
+    this.store?.verdict(id, responded);
+    this.emitEvent(id, {
       id: `v${Date.now().toString(36)}-${p.id}`,
       ts: Date.now(),
       kind: "verdict",
