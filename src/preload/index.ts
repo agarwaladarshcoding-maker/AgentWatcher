@@ -26,6 +26,6 @@ if (process.contextIsolated) {
   }
 } else {
   // Fallback only used if contextIsolation were ever disabled (it isn't).
-  // @ts-expect-error -- attach to window in the non-isolated case
-  window.agentwatch = api;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (globalThis as any).agentwatch = api;
 }
