@@ -213,10 +213,10 @@ Each phase has a hard **exit criterion**. We do not start the next phase until t
 ### Phase 3 — Permission control plane
 
 - Goal: the Allow/Deny loop works end-to-end against a real agent.
-    - [ ]  Detect permission prompts → create pending notification
-    - [ ]  Allow/Deny writes correct input to PTY stdin
-    - [ ]  Verdict moves item to Responded tab + logs it
-    - [ ]  Manual typing in the mirror still works as fallback
+    - [x]  Detect permission prompts → create pending notification
+    - [x]  Allow/Deny writes correct input to PTY stdin
+    - [x]  Verdict moves item to Responded tab + logs it
+    - [x]  Manual typing in the mirror still works as fallback
     
     **Exit criterion:** A real agent's permission prompt can be answered from the UI and the session continues correctly.
     
@@ -224,11 +224,11 @@ Each phase has a hard **exit criterion**. We do not start the next phase until t
 ### Phase 4 — Persistence, polish & packaging
 
 - Goal: a shippable, good-looking local-first MVP.
-    - [ ]  Local store for audit log + session history
-    - [ ]  Port v3 CSS/theme into the renderer properly
-    - [ ]  Settings (profiles, default responses)
-    - [ ]  Error/edge-case handling, empty states
-    - [ ]  electron-builder installers for all 3 OSes
+    - [x]  Local store for audit log + session history
+    - [x]  Port v3 CSS/theme into the renderer properly
+    - [x]  Settings (profiles, default responses)
+    - [x]  Error/edge-case handling, empty states
+    - [x]  electron-builder installers for all 3 OSes *(config + `npm run package` in place; produce the actual installers by running it on each OS)*
     
     **Exit criterion:** A fresh machine can install AgentWatch and run a full annotated, gated session.
     

@@ -42,6 +42,8 @@ const FILE_TOKEN = /[^\s"'`()[\]]+\.[A-Za-z][A-Za-z0-9]{0,7}\b/g;
 export interface InterpreterEmit {
   onState: (state: AgentState) => void;
   onEvent: (event: FeedEvent) => void;
+  /** A permission prompt was detected; raw is the matched prompt text. */
+  onPermission: (raw: string) => void;
 }
 
 let sequence = 0;
@@ -60,6 +62,8 @@ export class Interpreter {
   private lastTarget: string | null = null;
   private lastPermissionHash: string | null = null;
   private static readonly MAX_BUFFER = 8192;
+  private static readonly SCAN_LINES = 10;
+  private static readonly PERM_TAIL = 400;
 
   constructor(
     private readonly profile: AgentProfile,
@@ -73,38 +77,54 @@ export class Interpreter {
         -Interpreter.MAX_BUFFER,
       );
 
-      // Permission is the most specific signal; test the whole tail since a
-      // prompt can span chunk boundaries.
+      // Permission is the most specific signal. Only treat it as LIVE when the
+      // prompt is at the tail of the buffer (the agent just printed it). Once
+      // output appears after it (answered / scrolled), it's stale — we clear the
+      // de-dupe key so a later, genuine re-ask fires again.
+      const tail = this.buffer.slice(-Interpreter.PERM_TAIL);
       let permissionMatch: string | null = null;
       for (const re of this.profile.match.permission) {
-        const m = this.buffer.match(re);
+        const m = tail.match(re);
         if (m) {
           permissionMatch = m[0];
           break;
         }
       }
 
-      const line = permissionMatch ? null : this.lastNonEmptyLine();
-      const next: AgentState | null = permissionMatch
-        ? "waiting"
-        : line
-          ? this.classify(line)
-          : null;
-
-      if (next) {
-        const target =
-          (next === "reading" || next === "writing") && line
-            ? this.extractTarget(line)
-            : undefined;
-        this.transition(next, target);
+      if (permissionMatch) {
+        this.transition("waiting");
+        this.notePermission(permissionMatch);
+        return;
       }
+      this.lastPermissionHash = null;
 
-      if (permissionMatch) this.notePermission(permissionMatch);
+      // Otherwise scan the most RECENT classifiable line (newest-first). The very
+      // last line is often a prompt box / spinner frame with no signal; skipping
+      // to the newest meaningful line tracks TUI agents far better than only
+      // looking at the final line.
+      const recent = this.recentLines(Interpreter.SCAN_LINES);
+      for (const line of recent) {
+        const state = this.classify(line);
+        if (state) {
+          const target =
+            (state === "reading" || state === "writing") && line
+              ? this.extractTarget(line)
+              : undefined;
+          this.transition(state, target);
+          break;
+        }
+      }
     } catch {
       // Interpretation must never break the mirror.
     }
   }
 
+  /** Discard the permission de-dupe key (after a verdict, so a repeat re-fires). */
+  clearPermission(): void {
+    this.lastPermissionHash = null;
+  }
+
+  /** Emit the session-start event and reset to idle. */
   sessionStart(pid: number, command: string): void {
     this.buffer = "";
     this.currentState = null;
@@ -132,12 +152,15 @@ export class Interpreter {
     this.transition("done");
   }
 
-  private lastNonEmptyLine(): string | null {
+  /** The last `limit` non-empty lines, newest first. */
+  private recentLines(limit: number): string[] {
+    const out: string[] = [];
     const lines = this.buffer.split(/\r?\n/);
-    for (let i = lines.length - 1; i >= 0; i -= 1) {
-      if (lines[i].trim() !== "") return lines[i];
+    for (let i = lines.length - 1; i >= 0 && out.length < limit; i -= 1) {
+      const trimmed = lines[i].trim();
+      if (trimmed !== "") out.push(trimmed);
     }
-    return null;
+    return out;
   }
 
   private classify(line: string): AgentState | null {
@@ -193,5 +216,6 @@ export class Interpreter {
         detail: hash,
       }),
     );
+    this.emit.onPermission(raw);
   }
 }

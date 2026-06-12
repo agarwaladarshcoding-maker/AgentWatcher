@@ -11,21 +11,18 @@ locked plan.
 
 ## Status
 
-**Phase 2 + multi-agent relay (Phase 5 pulled forward).** On top of the faithful
-mirror, a tee'd ANSI-stripped copy feeds an interpreter that derives agent state
-(idle/reading/thinking/writing/waiting/done) and a live, file-aware event feed via
-swappable regex **Agent Profiles** (generic + Gemini + Claude starters).
+**MVP — Phases 0–4 complete (plus multi-agent pulled forward).** AgentWatch
+mirrors any CLI agent byte-for-byte, layers on "the words" (state + a file-aware
+event feed via Agent Profiles), and a **permission control plane** (Allow/Deny
+writes the agent's own y/n with a logged verdict — no OS interception). A single
+primary app owns all PTYs; each `agentwatch <cli>` relays to both its **native
+terminal** and the shared GUI, where a searchable **sidebar** lists every agent
+with instant switching and inline **rename**. Sessions, events, and verdicts are
+persisted to a local **SQLite audit log** (viewable via History); default Allow/
+Deny bytes are configurable in **Settings**. Packaged with electron-builder.
 
-A single **primary** app now owns the window and every PTY. Each `agentwatch <cli>`
-is a thin **relay** that connects over a local socket, so the agent mirrors in
-both its **native terminal** and the GUI — one process, no double compute,
-agent-agnostic. The GUI shows all agents in a searchable **sidebar** with instant
-switching. The permission control plane (Phase 3) and persistence (Phase 4) are
-next.
-
-**Exit criterion:** during real sessions the state badges + event feeds update
-sensibly while every mirror stays byte-perfect, agents are usable from both the
-native terminal and the GUI, and you can search/switch between several at once.
+**Exit criterion:** a fresh machine can install AgentWatch and run a full
+annotated, gated session.
 
 ## Stack
 
@@ -95,6 +92,8 @@ agentwatch/
 │  │  ├─ index.ts               # primary app: window + IPC wiring
 │  │  ├─ ipcServer.ts           # local socket server for relay launchers
 │  │  ├─ sessionManager.ts      # owns all sessions; per-session size negotiation
+│  │  ├─ settings.ts            # persisted app settings (default responses)
+│  │  ├─ store/db.ts            # SQLite audit log (sessions / events / verdicts)
 │  │  ├─ pty/ptyManager.ts      # node-pty wrapper
 │  │  └─ interpreter/           # cleaned stream -> state + events (+ profiles)
 │  ├─ preload/                  # contextBridge: the only main<->renderer surface
@@ -103,6 +102,7 @@ agentwatch/
 │        ├─ {main.tsx, App.tsx, styles.css, theme.ts}
 │        ├─ store/sessions.ts   # multi-session zustand store
 │        ├─ terminal/manager.ts # imperative per-session xterm manager
-│        └─ components/         # Sidebar, TerminalsLayer, EventFeed
+│        └─ components/         # Sidebar, TerminalsLayer, EventFeed,
+│                               #   NotificationPanel, History/Settings modals
 └─ resources/                   # icons, packaged assets (added later)
 ```

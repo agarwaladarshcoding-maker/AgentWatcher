@@ -2,10 +2,16 @@ import { join } from "node:path";
 import { app, shell, BrowserWindow, ipcMain } from "electron";
 import { SessionManager, type SessionSink } from "./sessionManager";
 import { IpcServer } from "./ipcServer";
+import { Store } from "./store/db";
+import { Settings } from "./settings";
 import {
   IPC,
   type SessionInputMsg,
   type SessionResizeMsg,
+  type SessionRespondMsg,
+  type SessionRenameMsg,
+  type HistoryFilter,
+  type AppSettings,
 } from "../shared/ipc";
 
 /**
@@ -17,6 +23,8 @@ import {
 let mainWindow: BrowserWindow | null = null;
 let ipcServer: IpcServer | null = null;
 let sessionManager: SessionManager | null = null;
+const store = new Store();
+const settings = new Settings();
 
 // Single instance: only one primary may own the socket + window. A second
 // `agentwatch …` boots Electron, which quits here and lets the relay connect to
@@ -68,26 +76,48 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  store.init();
+  settings.init();
+  const initial = settings.get();
+
   // The sink fans every session signal out to BOTH the renderer (GUI mirror)
-  // and the relay sockets (native terminals).
+  // and the relay sockets (native terminals), and persists to the audit log.
   const sink: SessionSink = {
+    onStart: (info) => store.startSession(info),
     onData: (id, chunk) => {
       sendToRenderer(IPC.sessionData, { id, chunk });
       ipcServer?.sendOutput(id, chunk);
     },
     onState: (id, state) => sendToRenderer(IPC.sessionState, { id, state }),
-    onEvent: (id, event) => sendToRenderer(IPC.sessionEvent, { id, event }),
+    onEvent: (id, event) => {
+      sendToRenderer(IPC.sessionEvent, { id, event });
+      store.addEvent(id, event);
+    },
     onSize: (id, cols, rows) =>
       sendToRenderer(IPC.sessionSize, { id, cols, rows }),
     onExit: (id, info) => {
       sendToRenderer(IPC.sessionExit, { id, info });
       ipcServer?.sendExit(id, info);
+      store.endSession(id, info.code);
+    },
+    onPermission: (id, permission) =>
+      sendToRenderer(IPC.sessionPermission, { id, permission }),
+    onVerdict: (id, verdict) => {
+      sendToRenderer(IPC.sessionVerdict, { id, verdict });
+      store.addVerdict(
+        id,
+        verdict.permissionId,
+        verdict.rawPrompt ?? "",
+        verdict.decision,
+        verdict.ts,
+      );
     },
     onListChanged: () =>
       sendToRenderer(IPC.sessionsList, sessionManager?.list() ?? []),
   };
 
   sessionManager = new SessionManager(sink);
+  sessionManager.setDefaultResponses(initial.defaultAllow, initial.defaultDeny);
   ipcServer = new IpcServer(sessionManager);
   ipcServer.listen();
 
@@ -96,11 +126,25 @@ app.whenReady().then(() => {
   ipcMain.on(IPC.sessionInput, (_e, m: SessionInputMsg) =>
     sessionManager?.write(m.id, m.data),
   );
-  // The GUI is the "gui" viewer; its size participates in per-session negotiation.
   ipcMain.on(IPC.sessionResize, (_e, m: SessionResizeMsg) =>
     sessionManager?.setViewerSize(m.id, "gui", m.cols, m.rows),
   );
   ipcMain.on(IPC.sessionClose, (_e, id: string) => sessionManager?.kill(id));
+  ipcMain.on(IPC.sessionRespond, (_e, m: SessionRespondMsg) =>
+    sessionManager?.respond(m.id, m.permissionId, m.decision),
+  );
+  ipcMain.on(IPC.sessionRename, (_e, m: SessionRenameMsg) =>
+    sessionManager?.rename(m.id, m.name),
+  );
+  ipcMain.handle(IPC.historyQuery, (_e, filter: HistoryFilter) =>
+    store.queryHistory(filter ?? {}),
+  );
+  ipcMain.handle(IPC.settingsGet, () => settings.get());
+  ipcMain.handle(IPC.settingsSet, (_e, patch: Partial<AppSettings>) => {
+    const next = settings.set(patch);
+    sessionManager?.setDefaultResponses(next.defaultAllow, next.defaultDeny);
+    return next;
+  });
 
   createWindow();
 
@@ -120,6 +164,7 @@ app.on("second-instance", () => {
 function shutdown(): void {
   sessionManager?.killAll();
   ipcServer?.close();
+  store.close();
 }
 
 app.on("before-quit", shutdown);

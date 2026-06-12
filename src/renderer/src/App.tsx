@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSessions } from "./store/sessions";
 import { TerminalManager } from "./terminal/manager";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalsLayer } from "./components/TerminalsLayer";
 import { EventFeed } from "./components/EventFeed";
+import { NotificationPanel } from "./components/NotificationPanel";
+import { HistoryModal } from "./components/HistoryModal";
+import { SettingsModal } from "./components/SettingsModal";
 import type { AgentState } from "../../shared/types";
 
 const STATE_LABEL: Record<AgentState, string> = {
@@ -28,6 +31,11 @@ function App(): JSX.Element {
   const applyState = useSessions((s) => s.applyState);
   const addEvent = useSessions((s) => s.addEvent);
   const applyExit = useSessions((s) => s.applyExit);
+  const addPermission = useSessions((s) => s.addPermission);
+  const resolvePermission = useSessions((s) => s.resolvePermission);
+  const pending = useSessions((s) => s.pending);
+
+  const [modal, setModal] = useState<"history" | "settings" | null>(null);
 
   const managerRef = useRef<TerminalManager | null>(null);
   if (!managerRef.current) {
@@ -62,6 +70,12 @@ function App(): JSX.Element {
         `\r\n\x1b[2m── session ended (code ${m.info.code}${sig}) ──\x1b[0m\r\n`,
       );
     });
+    const offPermission = window.agentwatch.onPermission((m) =>
+      addPermission(m.id, m.permission),
+    );
+    const offVerdict = window.agentwatch.onVerdict((m) =>
+      resolvePermission(m.id, m.verdict),
+    );
 
     return () => {
       offSessions();
@@ -70,8 +84,18 @@ function App(): JSX.Element {
       offState();
       offEvent();
       offExit();
+      offPermission();
+      offVerdict();
     };
-  }, [manager, setSessions, applyState, addEvent, applyExit]);
+  }, [
+    manager,
+    setSessions,
+    applyState,
+    addEvent,
+    applyExit,
+    addPermission,
+    resolvePermission,
+  ]);
 
   useEffect(() => () => manager.disposeAll(), [manager]);
 
@@ -89,9 +113,10 @@ function App(): JSX.Element {
     : "idle";
 
   const running = sessions.filter((s) => !s.ended).length;
-  const waiting = sessions.filter(
-    (s) => !s.ended && (states[s.id] ?? s.state) === "waiting",
-  ).length;
+  const pendingCount = Object.values(pending).reduce(
+    (sum, list) => sum + list.length,
+    0,
+  );
 
   return (
     <div className="shell">
@@ -101,9 +126,15 @@ function App(): JSX.Element {
         <span className="status-badge live" role="status">
           {running} running
         </span>
-        {waiting > 0 && (
-          <span className="status-badge waiting">{waiting} waiting</span>
+        {pendingCount > 0 && (
+          <span className="status-badge waiting">{pendingCount} pending</span>
         )}
+        <button className="topbar-btn" onClick={() => setModal("history")}>
+          History
+        </button>
+        <button className="topbar-btn" onClick={() => setModal("settings")}>
+          Settings
+        </button>
       </header>
 
       <div className="layout">
@@ -117,7 +148,7 @@ function App(): JSX.Element {
                   className={`state-dot state-${activeState} ${!active.ended && activeState !== "idle" ? "pulse" : ""}`}
                   aria-hidden="true"
                 />
-                <span className="agent-name">{active.commandLine}</span>
+                <span className="agent-name">{active.label}</span>
                 <span className="agent-pid">pid {active.pid}</span>
                 {active.nativeAttached && (
                   <span
@@ -141,8 +172,12 @@ function App(): JSX.Element {
 
         <aside className="right-col">
           <EventFeed />
+          <NotificationPanel />
         </aside>
       </div>
+
+      {modal === "history" && <HistoryModal onClose={() => setModal(null)} />}
+      {modal === "settings" && <SettingsModal onClose={() => setModal(null)} />}
     </div>
   );
 }

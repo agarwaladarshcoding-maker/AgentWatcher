@@ -9,6 +9,13 @@ import {
   type SessionExitMsg,
   type SessionInputMsg,
   type SessionResizeMsg,
+  type SessionRespondMsg,
+  type SessionRenameMsg,
+  type SessionPermissionMsg,
+  type SessionVerdictMsg,
+  type HistoryFilter,
+  type HistoryRow,
+  type AppSettings,
 } from "../shared/ipc";
 
 /**
@@ -60,6 +67,35 @@ const api = {
   },
   close(id: string): void {
     ipcRenderer.send(IPC.sessionClose, id);
+  },
+  rename(id: string, name: string): void {
+    ipcRenderer.send(IPC.sessionRename, { id, name } satisfies SessionRenameMsg);
+  },
+
+  // --- permission control plane ---
+  onPermission(callback: (msg: SessionPermissionMsg) => void): () => void {
+    return subscribe<SessionPermissionMsg>(IPC.sessionPermission, callback);
+  },
+  onVerdict(callback: (msg: SessionVerdictMsg) => void): () => void {
+    return subscribe<SessionVerdictMsg>(IPC.sessionVerdict, callback);
+  },
+  respond(id: string, permissionId: string, decision: "allow" | "deny"): void {
+    ipcRenderer.send(IPC.sessionRespond, {
+      id,
+      permissionId,
+      decision,
+    } satisfies SessionRespondMsg);
+  },
+
+  // --- audit log + settings (Phase 4) ---
+  getHistory(filter: HistoryFilter = {}): Promise<HistoryRow[]> {
+    return ipcRenderer.invoke(IPC.historyQuery, filter);
+  },
+  getSettings(): Promise<AppSettings> {
+    return ipcRenderer.invoke(IPC.settingsGet);
+  },
+  setSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
+    return ipcRenderer.invoke(IPC.settingsSet, patch);
   },
 
   // --- the words ---

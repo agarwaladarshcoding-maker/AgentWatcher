@@ -35,6 +35,8 @@ export interface SessionInfo {
   command: string;
   args: string[];
   commandLine: string;
+  /** User-facing label; defaults to the command and can be renamed. */
+  label: string;
   profile: string;
   pid: number;
   state: AgentState;
@@ -65,4 +67,6 @@ export interface Verdict {
   permissionId: string;
   decision: "allow" | "deny";
   ts: number;
+  /** The prompt that was answered (for the audit log + Responded card). */
+  rawPrompt?: string;
 }
