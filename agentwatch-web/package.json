@@ -1,0 +1,17 @@
+{
+  "name": "agentwatch-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AgentWatch Web — a read-only Chrome (MV3) extension that watches browser-based AI agents and notifies you when they finish, with optional bonding to the AgentWatch desktop app.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "icons": "node scripts/make-icons.mjs"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.268",
+    "esbuild": "^0.23.0",
+    "typescript": "^5.5.0"
+  }
+}

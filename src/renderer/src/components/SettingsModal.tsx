@@ -1,5 +1,6 @@
 import { Modal } from "./Modal";
 import { useSettings } from "../store/settings";
+import { useBrowserAgents } from "../store/browserAgents";
 
 /**
  * Settings: notification + sound toggles and configurable Allow/Deny responses
@@ -20,6 +21,8 @@ export function SettingsModal({
 }): JSX.Element {
   const settings = useSettings((s) => s.settings);
   const update = useSettings((s) => s.update);
+  const bridgeConnected = useBrowserAgents((s) => s.connected);
+  const pairingCode = useBrowserAgents((s) => s.pairingCode);
 
   return (
     <Modal
@@ -107,6 +110,36 @@ export function SettingsModal({
           placeholder="\n  (e.g. n\\n)"
           onChange={(e) => update({ denyInput: decode(e.target.value) })}
         />
+      </div>
+
+      <div className="field">
+        <label className="field-label">Chrome extension (AgentWatch Web)</label>
+        <p className="field-hint">
+          Watch browser agents (Claude, ChatGPT, Gemini…) and see them in the
+          Chrome section here. Load <code>agentwatch-web/dist</code> unpacked at{" "}
+          <code>chrome://extensions</code> (Developer mode → Load unpacked), open
+          the popup, and enter the pairing code below to bond it with this app.
+          The extension also works fully standalone.
+        </p>
+        <div className="bridge-pairing">
+          <span
+            className={`bridge-chip ${bridgeConnected ? "on" : ""}`}
+            role="status"
+          >
+            {bridgeConnected ? "● Connected" : "○ Not connected"}
+          </span>
+          <span className="bridge-code-label">Pairing code:</span>
+          <code className="bridge-code">{pairingCode || "starting…"}</code>
+          <button
+            className="btn"
+            disabled={!pairingCode}
+            onClick={() => {
+              if (pairingCode) void navigator.clipboard?.writeText(pairingCode);
+            }}
+          >
+            Copy
+          </button>
+        </div>
       </div>
     </Modal>
   );

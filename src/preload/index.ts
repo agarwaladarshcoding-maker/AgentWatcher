@@ -14,6 +14,10 @@ import {
   type PermissionResolvedMsg,
   type PermissionRespondedMsg,
   type PermissionRespondMsg,
+  type BrowserListMsg,
+  type BrowserStateMsg,
+  type BrowserCompletedMsg,
+  type BridgeStatusMsg,
 } from "../shared/ipc";
 import type {
   AppSettings,
@@ -143,6 +147,31 @@ const api = {
   // --- debug ---
   sendDebugTestNotification(): void {
     ipcRenderer.send(IPC.debugTestNotification);
+  },
+
+  // --- browser bonding (Chrome section) ---
+  onBrowserList(callback: (msg: BrowserListMsg) => void): () => void {
+    return subscribe<BrowserListMsg>(IPC.browserList, callback);
+  },
+  onBrowserState(callback: (msg: BrowserStateMsg) => void): () => void {
+    return subscribe<BrowserStateMsg>(IPC.browserState, callback);
+  },
+  onBrowserCompleted(
+    callback: (msg: BrowserCompletedMsg) => void,
+  ): () => void {
+    return subscribe<BrowserCompletedMsg>(IPC.browserCompleted, callback);
+  },
+  onBridgeStatus(callback: (msg: BridgeStatusMsg) => void): () => void {
+    return subscribe<BridgeStatusMsg>(IPC.bridgeStatus, callback);
+  },
+  getBridgeStatus(): Promise<BridgeStatusMsg> {
+    return ipcRenderer.invoke(IPC.bridgeStatusGet);
+  },
+  focusBrowserTab(tabId: number): void {
+    ipcRenderer.send(IPC.browserFocus, tabId);
+  },
+  replyBrowserTab(tabId: number, text: string): void {
+    ipcRenderer.send(IPC.browserReply, { tabId, text });
   },
 
   // --- lifecycle / dialogs ---

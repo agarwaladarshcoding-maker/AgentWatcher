@@ -55,6 +55,8 @@ interface Session {
   interpreter: Interpreter;
   viewers: Map<string, { cols: number; rows: number }>;
   pending: Map<string, PendingPermission>;
+  /** Last size actually pushed to the PTY; lets applySize skip redundant resizes. */
+  appliedSize?: { cols: number; rows: number };
 }
 
 export class SessionManager {
@@ -192,6 +194,7 @@ export class SessionManager {
       cols: size.cols,
       rows: size.rows,
     });
+    session.appliedSize = { cols: size.cols, rows: size.rows };
     info.pid = pid;
     interpreter.sessionStart(pid, info.commandLine);
     this.store?.sessionStarted(info);
@@ -361,6 +364,15 @@ export class SessionManager {
 
   private applySize(s: Session): void {
     const { cols, rows } = this.negotiate(s);
+    // Idempotent: a focus refit (or any caller) that computes the same size must
+    // not touch the PTY. Redundant resizes make full-screen TUIs repaint, which
+    // the interpreter would otherwise read as activity (the focus-switch flicker).
+    if (s.appliedSize && s.appliedSize.cols === cols && s.appliedSize.rows === rows) {
+      return;
+    }
+    s.appliedSize = { cols, rows };
+    // Tell the interpreter a repaint is imminent so it ignores the redraw bytes.
+    s.interpreter.noteResize();
     s.pty.resize(cols, rows);
     this.sink.onSize(s.info.id, cols, rows);
   }

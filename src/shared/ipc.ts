@@ -6,11 +6,13 @@
 import type {
   AgentState,
   AppSettings,
+  BrowserAgentState,
   FeedEvent,
   PendingPermission,
   PermissionAction,
   RespondedPermission,
   SessionInfo,
+  TrackedTab,
 } from "./types";
 
 /** Channel names — the complete main<->renderer surface. */
@@ -72,6 +74,22 @@ export const IPC = {
   appReady: "app:ready",
   /** renderer -> main (invoke): open a native folder picker; returns a path or null. */
   dialogPickDirectory: "dialog:pick-directory",
+
+  // ---- Browser bonding (spec: browser-bonding §B4) ----
+  /** main -> renderer (event): the full set of watched Chrome tabs + connected flag. */
+  browserList: "browser:list",
+  /** main -> renderer (event): a watched tab's state changed. */
+  browserState: "browser:state",
+  /** main -> renderer (event): a watched tab completed (snippet/output). */
+  browserCompleted: "browser:completed",
+  /** main -> renderer (event): bridge connection status + pairing code. */
+  bridgeStatus: "bridge:status",
+  /** renderer -> main (event): jump to a watched tab (focus + scroll). */
+  browserFocus: "browser:focus",
+  /** renderer -> main (event): opt-in reply injected into a tab's composer. */
+  browserReply: "browser:reply",
+  /** renderer -> main (invoke): current bridge status (connected, port, pairing code). */
+  bridgeStatusGet: "bridge:status-get",
 } as const;
 
 /** Terminal dimensions in character cells. */
@@ -151,12 +169,44 @@ export interface PermissionRespondMsg {
   action: PermissionAction;
 }
 
+/** ── Browser bonding payloads ─────────────────────────────────────────── */
+/** main -> renderer: full watched-tab snapshot + whether the extension is connected. */
+export interface BrowserListMsg {
+  connected: boolean;
+  tabs: TrackedTab[];
+}
+/** main -> renderer: a single tab's state change. */
+export interface BrowserStateMsg {
+  tabId: number;
+  state: BrowserAgentState;
+}
+/** main -> renderer: a tab completed. */
+export interface BrowserCompletedMsg {
+  tabId: number;
+  label: string;
+  snippet?: string;
+  output?: string;
+}
+/** main -> renderer: bridge connection status + the pairing code to show the user. */
+export interface BridgeStatusMsg {
+  connected: boolean;
+  port: number | null;
+  pairingCode: string;
+}
+/** renderer -> main: opt-in reply injected into a watched tab's composer. */
+export interface BrowserReplyMsg {
+  tabId: number;
+  text: string;
+}
+
 export type {
   AgentState,
   AppSettings,
+  BrowserAgentState,
   FeedEvent,
   PendingPermission,
   PermissionAction,
   RespondedPermission,
   SessionInfo,
+  TrackedTab,
 };

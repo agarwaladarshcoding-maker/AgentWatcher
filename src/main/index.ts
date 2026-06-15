@@ -5,14 +5,25 @@ import { SessionManager, type SessionSink } from "./sessionManager";
 import { IpcServer } from "./ipcServer";
 import { NotificationCenter } from "./notifications";
 import { createAuditStore, type AuditStore } from "./store/db";
+import { BridgeServer, type BridgeStatus } from "./bridge/bridgeServer";
+import {
+  BrowserAgentRegistry,
+  type BrowserAgentSink,
+} from "./bridge/browserAgents";
 import {
   IPC,
   type SessionInputMsg,
   type SessionResizeMsg,
   type SessionSpawnMsg,
   type PermissionRespondMsg,
+  type BrowserReplyMsg,
 } from "../shared/ipc";
-import type { AgentState, AppSettings, HistoryDetail } from "../shared/types";
+import type {
+  AgentState,
+  AppSettings,
+  HistoryDetail,
+  TrackedTab,
+} from "../shared/types";
 
 /**
  * Electron main: the single PRIMARY that owns the window and every PTY. Relay
@@ -25,12 +36,32 @@ let ipcServer: IpcServer | null = null;
 let sessionManager: SessionManager | null = null;
 let notifications: NotificationCenter | null = null;
 let auditStore: AuditStore | null = null;
+let bridgeServer: BridgeServer | null = null;
+let browserRegistry: BrowserAgentRegistry | null = null;
+
+/** Last pushed browser state, re-sent to the renderer on (re)load. */
+let lastBrowserList: TrackedTab[] = [];
+let lastBridgeStatus: BridgeStatus = {
+  connected: false,
+  port: null,
+  pairingCode: "",
+};
 
 /** Whether the dashboard window currently has OS focus (gates "ready" toasts). */
 let windowFocused = false;
 
 /** Keys (`${sessionId}:${permissionId}`) of every still-pending permission. */
 const pendingKeys = new Set<string>();
+
+/**
+ * "Ready" (busy→idle) toast gating, so a chatty full-screen CLI that keeps
+ * redrawing (Gemini's idle spinner/timer) can't fire a "ready" every few
+ * seconds. A toast may fire only ONCE per genuine working→completed edge
+ * (re-armed when real `working` is next seen) AND no more than once per gap.
+ */
+const readyArmed = new Map<string, boolean>();
+const lastReadyAt = new Map<string, number>();
+const READY_MIN_GAP_MS = 12000;
 
 // A stable app identity so OS notifications are attributed to AgentWatch (not
 // "Electron") and Windows can group/toast correctly.
@@ -170,7 +201,23 @@ function createWindow(): void {
   });
   mainWindow = win;
 
-  win.on("ready-to-show", () => win.show());
+  win.on("ready-to-show", () => {
+    win.show();
+    // The GUI owns the PTY size for its whole lifetime (sticky). We do NOT
+    // hand authority back on blur anymore: dropping to the MIN-across-viewers
+    // size on every focus change resized the PTY back and forth, which made
+    // full-screen agents repaint and the state flicker working↔completed.
+    sessionManager?.setSizeAuthority("gui");
+  });
+  // Re-sync browser-bonding state to the renderer whenever it (re)loads, so a
+  // reload while the extension is connected still shows the Chrome section.
+  win.webContents.on("did-finish-load", () => {
+    win.webContents.send(IPC.bridgeStatus, lastBridgeStatus);
+    win.webContents.send(IPC.browserList, {
+      connected: lastBridgeStatus.connected,
+      tabs: lastBrowserList,
+    });
+  });
   win.on("closed", () => {
     if (mainWindow === win) mainWindow = null;
     windowFocused = false;
@@ -178,16 +225,13 @@ function createWindow(): void {
     sessionManager?.setSizeAuthority(null);
   });
 
-  // While the dashboard is focused it OWNS the PTY size, so agents use the full
-  // GUI width even when a small native terminal is also mirroring them. When the
-  // GUI loses focus, native terminals take the size back (MIN negotiation).
+  // Track focus only to gate "ready" toasts. Crucially, focus/blur no longer
+  // renegotiates PTY size — see the sticky authority set in ready-to-show.
   win.on("focus", () => {
     windowFocused = true;
-    sessionManager?.setSizeAuthority("gui");
   });
   win.on("blur", () => {
     windowFocused = false;
-    sessionManager?.setSizeAuthority(null);
   });
 
   win.webContents.setWindowOpenHandler((details) => {
@@ -296,6 +340,48 @@ function runNotificationSelfTest(): void {
 }
 
 /**
+ * Bridge integration test (`npm run bridge-test`): start the REAL BridgeServer
+ * + BrowserAgentRegistry, print the port + pairing code, and let a WS client
+ * (scripts/bridge-test.mjs) drive the full contract: token gate, hello-ack,
+ * snapshot/state/completed → registry, and app→ext focusTab/scrollToLatest/
+ * injectReply. Prints PASS/FAIL lines via [bridge] and exits.
+ */
+async function runBridgeTest(): Promise<void> {
+  const sleep = (ms: number): Promise<void> =>
+    new Promise((r) => setTimeout(r, ms));
+  let lastList: TrackedTab[] = [];
+  let completedCount = 0;
+
+  const registry = new BrowserAgentRegistry({
+    onListChanged: (tabs) => {
+      lastList = tabs;
+      console.log(`[bridge] LIST n=${tabs.length}`);
+    },
+    onCompleted: (tab) => {
+      completedCount += 1;
+      console.log(`[bridge] COMPLETED tabId=${tab.tabId} label=${tab.label}`);
+      // Exercise the app→ext path so the client can assert it receives them.
+      bridge.focusTab(tab.tabId);
+      bridge.injectReply(tab.tabId, "ack from app");
+    },
+  });
+  const bridge = new BridgeServer(registry, (status) => {
+    if (status.port) {
+      console.log(`[bridge] READY port=${status.port} code=${status.pairingCode}`);
+    }
+  });
+  bridge.start();
+
+  // Safety timeout: the client must finish within this window.
+  await sleep(15000);
+  console.log(
+    `[bridge] SUMMARY lists=${lastList.length >= 0 ? "ok" : "no"} completed=${completedCount}`,
+  );
+  bridge.shutdown();
+  app.exit(0);
+}
+
+/**
  * Backend scenario test (`npm run scenarios-test`): spin up the REAL
  * SessionManager + interpreter + PTY and run many CLIs through it to prove:
  *   - state detection (idle → working → completed) works from output activity
@@ -340,12 +426,13 @@ async function runScenarioTests(): Promise<void> {
     output: string;
     exited: boolean;
     exitCode?: number;
+    sizes: number;
   }
   const records = new Map<string, Rec>();
   const rec = (id: string): Rec => {
     let r = records.get(id);
     if (!r) {
-      r = { states: [], output: "", exited: false };
+      r = { states: [], output: "", exited: false, sizes: 0 };
       records.set(id, r);
     }
     return r;
@@ -360,7 +447,9 @@ async function runScenarioTests(): Promise<void> {
       if (r.states[r.states.length - 1] !== state) r.states.push(state);
     },
     onEvent: () => {},
-    onSize: () => {},
+    onSize: (id) => {
+      rec(id).sizes += 1;
+    },
     onExit: (id, info) => {
       const r = rec(id);
       r.exited = true;
@@ -451,7 +540,62 @@ async function runScenarioTests(): Promise<void> {
     check("python3 present", true, "not installed — skipped", true);
   }
 
-  // 5) Real agent CLIs — spawn, confirm activity, then terminate. kiro falls
+  // 5) FOCUS/RESIZE FLICKER REGRESSION — the bug this spec fixes. A TUI-like
+  //    process repaints (emits a burst) when it receives SIGWINCH. After it has
+  //    settled to idle, (a) a same-size refit must NOT resize the PTY
+  //    (idempotent), and (b) a real resize's repaint must NOT be read as
+  //    activity, so the state stays put instead of flickering working↔completed.
+  try {
+    const repaintScript =
+      "process.stdout.write('initial render');" +
+      "process.on('SIGWINCH',()=>process.stdout.write('X'.repeat(400)));" +
+      "setInterval(()=>{},1000)";
+    const id = spawn("node", ["-e", repaintScript]);
+    await waitFor(() => rec(id).states.includes("working"), 4000);
+    // Let it fully settle: completed, then decayed back to idle as the LAST
+    // state (not the initial idle emitted at session start).
+    const settled = (): boolean => {
+      const st = rec(id).states;
+      return st.includes("completed") && st[st.length - 1] === "idle";
+    };
+    await waitFor(settled, 4000);
+    await sleep(200);
+    const r = rec(id);
+    const statesBefore = r.states.length;
+    const sizesBefore = r.sizes; // resizes from sink.onSize (only on real resize)
+
+    // (a) Same-size refit (what a focus event does): must be a no-op.
+    mgr.setViewerSize(id, "gui", 80, 24);
+    mgr.setViewerSize(id, "gui", 80, 24);
+    await sleep(150);
+    check(
+      "flicker: same-size refit does not resize the PTY",
+      rec(id).sizes === sizesBefore,
+      `resizes ${rec(id).sizes - sizesBefore}`,
+    );
+
+    // (b) A genuine resize triggers a repaint; the repaint must be ignored.
+    mgr.setViewerSize(id, "gui", 100, 30);
+    await sleep(700);
+    const after = rec(id);
+    check(
+      "flicker: genuine resize did happen",
+      after.sizes === sizesBefore + 1,
+      `resizes ${after.sizes - sizesBefore}`,
+    );
+    check(
+      "flicker: resize repaint does not change state",
+      after.states.length === statesBefore &&
+        after.states[after.states.length - 1] === "idle",
+      after.states.join(">"),
+    );
+    mgr.kill(id);
+    await waitFor(() => rec(id).exited, 4000);
+  } catch (e) {
+    check("flicker regression", false, String(e));
+  }
+
+  // 6) Real agent CLIs — spawn, confirm activity, then terminate. kiro falls
   //    back to the Kiro.app launcher with --version so it never opens the IDE.
   const kiroLauncher = "/Applications/Kiro.app/Contents/Resources/app/bin/code";
   const agents: Array<{ name: string; command: string | null; args: string[]; quick: boolean }> = [
@@ -516,14 +660,24 @@ app.whenReady().then(() => {
     },
     onState: (id, state) => {
       sendToRenderer(IPC.sessionState, { id, state });
+      // Re-arm "ready" on genuine work so we fire at most once per busy→idle
+      // edge; never re-fire for a CLI that merely redraws while idle.
+      if (state === "working") readyArmed.set(id, true);
       // When the agent finishes a turn and the user isn't looking at the
       // window (or there is none, in --nodashboard mode), nudge them that it's
-      // ready. Session-end replaces this with its own toast.
+      // ready — but only once per real edge and not more often than the gap.
       if (state === "completed" && !windowFocused) {
-        const commandLine =
-          sessionManager?.list().find((s) => s.id === id)?.commandLine ??
-          "agent";
-        notifications?.notifyReady(id, { commandLine });
+        const now = Date.now();
+        const armed = readyArmed.get(id) ?? false;
+        const gapOk = now - (lastReadyAt.get(id) ?? 0) >= READY_MIN_GAP_MS;
+        if (armed && gapOk) {
+          readyArmed.set(id, false);
+          lastReadyAt.set(id, now);
+          const commandLine =
+            sessionManager?.list().find((s) => s.id === id)?.commandLine ??
+            "agent";
+          notifications?.notifyReady(id, { commandLine });
+        }
       }
     },
     onEvent: (id, event) => sendToRenderer(IPC.sessionEvent, { id, event }),
@@ -581,9 +735,49 @@ app.whenReady().then(() => {
         sessionManager?.list().find((s) => s.id === sessionId)?.commandLine ??
         "agent",
       flashAttention: () => flashAttention(),
+      focusWindow: () => ensureWindow(),
     },
     sessionManager.getSettings(),
   );
+
+  // ── Browser bonding: registry + local bridge to the Chrome extension ──
+  // Additive only: when nothing is connected the registry is empty and the
+  // renderer's Chrome section stays hidden.
+  const browserSink: BrowserAgentSink = {
+    onListChanged: (tabs) => {
+      lastBrowserList = tabs;
+      sendToRenderer(IPC.browserList, {
+        connected: lastBridgeStatus.connected,
+        tabs,
+      });
+    },
+    onCompleted: (tab) => {
+      sendToRenderer(IPC.browserCompleted, {
+        tabId: tab.tabId,
+        label: tab.label,
+        snippet: tab.snippet,
+        output: tab.output,
+      });
+      if (!windowFocused) {
+        notifications?.notifyBrowserCompleted({
+          tabId: tab.tabId,
+          label: tab.label,
+          snippet: tab.snippet,
+        });
+      }
+    },
+  };
+  browserRegistry = new BrowserAgentRegistry(browserSink);
+  bridgeServer = new BridgeServer(browserRegistry, (status) => {
+    lastBridgeStatus = status;
+    sendToRenderer(IPC.bridgeStatus, status);
+    // Connection flag rides along with the list so the section shows/hides.
+    sendToRenderer(IPC.browserList, {
+      connected: status.connected,
+      tabs: lastBrowserList,
+    });
+  });
+  if (!process.env.AGENTWATCH_SELFTEST) bridgeServer.start();
 
   // Notification self-test (`npm run notif-test`): exercise the real
   // NotificationCenter, print results, and quit. Runs before any window/IPC.
@@ -597,6 +791,12 @@ app.whenReady().then(() => {
   // terminate/kill path, then quit.
   if (process.env.AGENTWATCH_SELFTEST === "scenarios") {
     void runScenarioTests();
+    return;
+  }
+
+  // Bridge integration self-test (`npm run bridge-test`).
+  if (process.env.AGENTWATCH_SELFTEST === "bridge") {
+    void runBridgeTest();
     return;
   }
 
@@ -639,6 +839,18 @@ app.whenReady().then(() => {
     sessionManager?.updateSettings(s);
     notifications?.updateSettings(s);
   });
+
+  // ── Browser bonding: renderer → bridge actions + status query ──
+  ipcMain.on(IPC.browserFocus, (_e, tabId: number) => {
+    if (typeof tabId === "number") bridgeServer?.focusTab(tabId);
+  });
+  ipcMain.on(IPC.browserReply, (_e, m: BrowserReplyMsg) => {
+    // The single sanctioned write: only ever sent on an explicit user submit.
+    if (m && typeof m.tabId === "number" && typeof m.text === "string") {
+      bridgeServer?.injectReply(m.tabId, m.text);
+    }
+  });
+  ipcMain.handle(IPC.bridgeStatusGet, () => lastBridgeStatus);
 
   // Phase 4: history / audit-log queries (read-only from the renderer).
   ipcMain.handle(IPC.historyQuery, (_e, limit?: number) =>
@@ -768,6 +980,7 @@ function shutdown(): void {
   notifications?.clearAll();
   sessionManager?.killAll();
   ipcServer?.close();
+  bridgeServer?.shutdown();
   auditStore?.close();
   auditStore = null;
 }

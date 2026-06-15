@@ -1337,3 +1337,235 @@ body,
     transform: rotate(360deg);
   }
 }
+
+/* ── Browser bonding: the Chrome section (spec: browser-bonding §B5) ── */
+.chrome-section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-bottom: 0.5px solid var(--border);
+}
+
+.chrome-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 0.5px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.chrome-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+
+.chrome-section-counts {
+  font-size: 10px;
+  color: var(--text-2);
+}
+
+.chrome-empty {
+  color: var(--text-2);
+  font-size: 12px;
+  text-align: center;
+  padding: 18px 12px;
+}
+
+.chrome-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  overflow-y: auto;
+}
+
+.chrome-card {
+  border: 0.5px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  padding: 8px 10px;
+}
+
+.chrome-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chrome-favicon {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  flex: 0 0 auto;
+}
+
+.chrome-favicon.placeholder {
+  background: var(--surface-3);
+}
+
+.chrome-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chrome-goto {
+  font-size: 11px;
+  color: var(--text-1);
+  background: var(--surface-2);
+  border: 0.5px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.chrome-goto:hover {
+  background: var(--surface-3);
+}
+
+/* Browser state pills reuse the semantic palette: working=amber, done=green. */
+.state-pill.state-browser-working {
+  color: var(--amber-text);
+  background: var(--amber-bg);
+}
+.state-pill.state-browser-done {
+  color: var(--green-text);
+  background: var(--green-bg);
+}
+.state-pill.state-browser-idle {
+  color: var(--text-2);
+  background: var(--surface-3);
+}
+
+.chrome-snippet {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #e6e4d9;
+  background: var(--terminal-bg);
+  border-radius: var(--radius-sm);
+  padding: 7px 9px;
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+
+.chrome-reply {
+  margin-top: 8px;
+}
+
+.chrome-reply-open {
+  font-size: 11px;
+  color: var(--text-2);
+  background: transparent;
+  border: 0.5px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.chrome-reply-open:hover {
+  background: var(--surface-2);
+  color: var(--text-1);
+}
+
+.chrome-reply-input {
+  width: 100%;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-1);
+  background: var(--surface-2);
+  border: 0.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 9px;
+  outline: none;
+  resize: vertical;
+}
+
+.chrome-reply-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.chrome-reply-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.chrome-reply-warn {
+  font-size: 10px;
+  color: var(--amber-text);
+  margin-right: auto;
+}
+
+.chrome-reply-cancel {
+  font-size: 11px;
+  color: var(--text-2);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.chrome-reply-send {
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 5px 11px;
+  cursor: pointer;
+}
+
+.chrome-reply-send:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Settings → Chrome extension pairing row. */
+.bridge-pairing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.bridge-chip {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-2);
+  background: var(--surface-3);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+}
+
+.bridge-chip.on {
+  color: var(--green-text);
+  background: var(--green-bg);
+}
+
+.bridge-code-label {
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.bridge-code {
+  font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 0.5px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  letter-spacing: 0.08em;
+}

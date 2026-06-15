@@ -171,3 +171,36 @@ export interface HistoryDetail {
   events: FeedEvent[];
   verdicts: RespondedPermission[];
 }
+
+/**
+ * ─── Browser bonding (spec: browser-bonding §B) ───────────────────────────
+ * The state of a browser-based agent tab, as observed by the AgentWatch Web
+ * Chrome extension and streamed to the desktop app over the local bridge.
+ * Mirrors AgentState but in the web vocabulary (done == completed).
+ */
+export type BrowserAgentState = "idle" | "working" | "done";
+
+/**
+ * One watched browser tab, keyed by Chrome `tabId` (the web analog of a PID).
+ * The desktop "Chrome section" renders one card per TrackedTab when the
+ * extension is connected; absent entirely when it is not.
+ */
+export interface TrackedTab {
+  /** Chrome tab id — the stable identity of a watched agent tab. */
+  tabId: number;
+  /** Chrome window id, used to focus the right window on jump-to-tab. */
+  windowId?: number;
+  /** Adapter that matched this tab, e.g. "claude". */
+  adapterId: string;
+  /** Human label, e.g. "Claude". */
+  label: string;
+  url?: string;
+  favIconUrl?: string;
+  state: BrowserAgentState;
+  /** epoch ms of the last state change. */
+  lastChange: number;
+  /** First ~120 chars of the latest answer (set on completion). */
+  snippet?: string;
+  /** Optional fuller latest-message text, shown inline in the card. */
+  output?: string;
+}

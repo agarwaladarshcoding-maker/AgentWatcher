@@ -25,6 +25,12 @@ export function TerminalsLayer({
   const sessions = useSessions((s) => s.sessions);
   const activeId = useSessions((s) => s.activeId);
   const hosts = useRef<Map<string, HTMLDivElement>>(new Map());
+  // Last GUI size we reported per session, so refits (esp. on window focus) only
+  // notify main when the size truly changed. A no-op refit must not trigger a
+  // PTY resize — redundant resizes repaint full-screen agents and flicker state.
+  const lastReported = useRef<Map<string, { cols: number; rows: number }>>(
+    new Map(),
+  );
 
   // Ensure each session has a terminal mounted into its host.
   useEffect(() => {
@@ -45,7 +51,10 @@ export function TerminalsLayer({
     let timer = 0;
     const doFit = (): void => {
       const size = manager.fit(activeId);
-      if (size) onGuiSize(activeId, size.cols, size.rows);
+      if (size) {
+        lastReported.current.set(activeId, size);
+        onGuiSize(activeId, size.cols, size.rows);
+      }
     };
     raf1 = requestAnimationFrame(() => {
       doFit();
@@ -61,13 +70,18 @@ export function TerminalsLayer({
   }, [activeId, sessions.length, manager, onGuiSize]);
 
   // Keep the active terminal fitted to the window / panel. Refit on window
-  // resize, on container resize, and when the window regains focus (the GUI
-  // becomes the PTY size authority again on focus).
+  // resize, on container resize, and when the window regains focus. We only
+  // report a size to main when it actually changed, so merely focusing the
+  // window (with an unchanged layout) never resizes the PTY.
   useEffect(() => {
     if (!activeId) return;
     const refit = (): void => {
       const size = manager.fit(activeId);
-      if (size) onGuiSize(activeId, size.cols, size.rows);
+      if (!size) return;
+      const prev = lastReported.current.get(activeId);
+      if (prev && prev.cols === size.cols && prev.rows === size.rows) return;
+      lastReported.current.set(activeId, size);
+      onGuiSize(activeId, size.cols, size.rows);
     };
     window.addEventListener("resize", refit);
     window.addEventListener("focus", refit);

@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSessions } from "./store/sessions";
 import { useSettings } from "./store/settings";
+import { useBrowserAgents } from "./store/browserAgents";
 import { TerminalManager } from "./terminal/manager";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalsLayer } from "./components/TerminalsLayer";
 import { EventFeed } from "./components/EventFeed";
 import { NotificationPanel } from "./components/NotificationPanel";
+import { ChromeSection } from "./components/ChromeSection";
 import { NewTerminalModal } from "./components/NewTerminalModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { HistoryModal } from "./components/HistoryModal";
@@ -70,6 +72,11 @@ function App(): JSX.Element {
 
   const syncSettings = useSettings((s) => s.sync);
   const soundEnabled = useSettings((s) => s.settings.sound);
+
+  const setBridgeStatus = useBrowserAgents((s) => s.setBridgeStatus);
+  const setBrowserSnapshot = useBrowserAgents((s) => s.setSnapshot);
+  const applyBrowserState = useBrowserAgents((s) => s.applyState);
+  const applyBrowserCompleted = useBrowserAgents((s) => s.applyCompleted);
 
   const [modal, setModal] = useState<ModalKind>(null);
   const [booting, setBooting] = useState(true);
@@ -144,6 +151,36 @@ function App(): JSX.Element {
     });
     const offFocus = window.agentwatch.onFocusSession((id) => setActive(id));
 
+    // ── Browser bonding subscriptions (Chrome section) ──
+    window.agentwatch
+      .getBridgeStatus()
+      .then((s) =>
+        setBridgeStatus({
+          connected: s.connected,
+          pairingCode: s.pairingCode,
+          port: s.port,
+        }),
+      )
+      .catch(() => {
+        /* bridge may be unavailable; section stays hidden */
+      });
+    const offBridgeStatus = window.agentwatch.onBridgeStatus((s) =>
+      setBridgeStatus({
+        connected: s.connected,
+        pairingCode: s.pairingCode,
+        port: s.port,
+      }),
+    );
+    const offBrowserList = window.agentwatch.onBrowserList((m) =>
+      setBrowserSnapshot(m.connected, m.tabs),
+    );
+    const offBrowserState = window.agentwatch.onBrowserState((m) =>
+      applyBrowserState(m.tabId, m.state),
+    );
+    const offBrowserCompleted = window.agentwatch.onBrowserCompleted((m) =>
+      applyBrowserCompleted(m.tabId, m.label, m.snippet, m.output),
+    );
+
     return () => {
       cancelled = true;
       window.clearTimeout(failsafe);
@@ -157,6 +194,10 @@ function App(): JSX.Element {
       offResolved();
       offResponded();
       offFocus();
+      offBridgeStatus();
+      offBrowserList();
+      offBrowserState();
+      offBrowserCompleted();
     };
   }, [
     manager,
@@ -169,6 +210,10 @@ function App(): JSX.Element {
     addPending,
     removePending,
     addResponded,
+    setBridgeStatus,
+    setBrowserSnapshot,
+    applyBrowserState,
+    applyBrowserCompleted,
   ]);
 
   // Crash-safety: dispose terminals whose session was removed/dismissed.
@@ -283,6 +328,7 @@ function App(): JSX.Element {
 
         <aside className="right-col">
           <EventFeed />
+          <ChromeSection />
           <NotificationPanel />
         </aside>
       </div>

@@ -57,6 +57,12 @@ export interface InterpreterOptions {
   minWorkBytes?: number;
   /** How often the timer re-evaluates the state. */
   tickMs?: number;
+  /**
+   * After a PTY resize (SIGWINCH), full-screen agent TUIs repaint their whole
+   * UI. Those repaint bytes are NOT agent activity. For this long, output is
+   * treated as a repaint and ignored by the activity state machine.
+   */
+  resizeGraceMs?: number;
 }
 
 function envNum(key: string, fallback: number): number {
@@ -85,6 +91,8 @@ export class Interpreter {
   private workStartedAt = 0;
   private workBytes = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** When the last PTY resize happened; output within the grace window is a repaint. */
+  private lastResizeAt = 0;
 
   private static readonly MAX_BUFFER = 8192;
   private readonly quietMs: number;
@@ -92,6 +100,7 @@ export class Interpreter {
   private readonly minWorkMs: number;
   private readonly minWorkBytes: number;
   private readonly tickMs: number;
+  private readonly resizeGraceMs: number;
 
   constructor(
     private readonly profile: AgentProfile,
@@ -104,6 +113,18 @@ export class Interpreter {
     this.minWorkBytes =
       options?.minWorkBytes ?? envNum("AGENTWATCH_MIN_WORK_BYTES", 24);
     this.tickMs = options?.tickMs ?? envNum("AGENTWATCH_TICK_MS", 200);
+    this.resizeGraceMs =
+      options?.resizeGraceMs ?? envNum("AGENTWATCH_RESIZE_GRACE_MS", 400);
+  }
+
+  /**
+   * Tell the interpreter a PTY resize just happened. The agent TUI will repaint
+   * itself in response; those bytes are NOT activity, so for the next
+   * `resizeGraceMs` we ignore output for state purposes (permission detection
+   * still runs). Called by the SessionManager around every real `pty.resize`.
+   */
+  noteResize(): void {
+    this.lastResizeAt = Date.now();
   }
 
   /** Feed a tee'd copy of a raw PTY chunk. Strips ANSI internally. */
@@ -132,6 +153,14 @@ export class Interpreter {
       // Any output at all is "activity". The agent visibly moved on, so a prompt
       // it was blocking on has been answered (in the terminal or by us).
       if (clean.length > 0) {
+        // …unless this output is a repaint triggered by a recent PTY resize.
+        // Full-screen TUIs redraw their whole UI on SIGWINCH; counting that as
+        // work is what made the state flicker working↔completed when the user
+        // switched focus between apps. The buffer (above) is already updated for
+        // permission detection; we just don't let the repaint drive activity.
+        if (now - this.lastResizeAt < this.resizeGraceMs) {
+          return;
+        }
         if (this.activePermission && clean.trim().length > 0) {
           this.resolveActivePermission();
         }
@@ -300,10 +329,32 @@ export class Interpreter {
     return lines.slice(-6).join("\n").trim().slice(0, 600);
   }
 
+  /**
+   * Collapse a prompt to its STABLE skeleton for de-dupe: drop spinner glyphs,
+   * box-drawing, every digit (timers / elapsed seconds / context %), and
+   * whitespace runs. Two redraws of the same dialog hash identically even as
+   * their live counters tick — so we never re-emit (and never re-notify).
+   */
+  private normalizeForHash(s: string): string {
+    return s
+      .replace(/[\u2800-\u28FF]/g, " ") // braille spinner frames
+      .replace(/[●○◐◓◑◒◌◍⣾⣽⣻⢿⡿⣟⣯⣷|/\\]+/g, " ") // other spinner/sep glyphs
+      .replace(/[│┃╮╯╰╭┌┐└┘─-]+/g, " ") // box drawing
+      .replace(/\d+/g, "#") // timers, percentages, counts
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 200);
+  }
+
   private notePermission(raw: string): void {
     const choices = this.parseChoices();
     const snapshot = this.promptSnapshot();
-    const hash = `${raw.trim().slice(0, 120)}::${choices.length}`;
+    // Hash on a NORMALIZED view of the prompt so volatile content — live
+    // timers ("12s"), spinner glyphs, context-% counters that full-screen CLIs
+    // (e.g. Gemini) redraw constantly — never looks like a brand-new prompt.
+    // Without this, each redraw minted a new permission id and re-fired a
+    // notification every few seconds.
+    const hash = `${this.normalizeForHash(snapshot || raw)}::${choices.length}`;
     if (hash === this.activePermissionHash) return; // same prompt still showing
     if (this.activePermission) this.resolveActivePermission(); // a new prompt replaced it
     this.activePermissionHash = hash;

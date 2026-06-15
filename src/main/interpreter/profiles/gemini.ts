@@ -23,8 +23,6 @@ export const geminiProfile: AgentProfile = {
       /allow\b.*\?\s*\(y\/n\)/i,
       /do you want to (proceed|continue|run|execute|allow)/i,
       /waiting for (user )?confirmation/i,
-      /\benter to submit\b[\s\S]*\besc to cancel\b/i,
-      /\besc to cancel\b[\s\S]*\benter to submit\b/i,
     ],
   },
   responses: { allow: "y\n", deny: "n\n" },

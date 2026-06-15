@@ -16,7 +16,6 @@ export const genericProfile: AgentProfile = {
       /\bpermission\b.*\?/i,
       /\bconfirm\b.*\?/i,
       /press\s+enter\s+to\s+(continue|confirm)/i,
-      /\benter to submit\b.*\besc to cancel\b/is,
     ],
   },
   responses: { allow: "y\n", deny: "n\n" },

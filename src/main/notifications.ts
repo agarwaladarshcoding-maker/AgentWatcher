@@ -45,6 +45,8 @@ export interface NotificationDeps {
   label(sessionId: string): string;
   /** Fallback attention cue (dock bounce / window flash) so a prompt is never missed. */
   flashAttention(): void;
+  /** Bring the dashboard window to the front (used for browser-tab completions). */
+  focusWindow?(): void;
 }
 
 export class NotificationCenter {
@@ -206,6 +208,32 @@ export class NotificationCenter {
         silent: !this.settings.sound,
       },
       { onClick: () => this.deps.focus(sessionId) },
+    );
+    return shown ? "raised" : "unsupported";
+  }
+
+  /**
+   * A browser-based agent (watched by the Chrome extension) finished. Mirrors
+   * the "ready" toast but for a tab; clicking it brings the app window forward
+   * so the user can see the Chrome section. The actual jump-to-tab happens via
+   * the card's "go to" button (which drives the bridge).
+   */
+  notifyBrowserCompleted(info: {
+    tabId: number;
+    label: string;
+    snippet?: string;
+  }): "raised" | "disabled" | "unsupported" {
+    if (!this.settings.notifications || !this.settings.notifyOnComplete)
+      return "disabled";
+    const shown = this.raise(
+      `browser-done:${info.tabId}`,
+      {
+        title: `✓ ${info.label} finished`,
+        body: info.snippet?.slice(0, 120) || "The browser agent is done. Click to review it.",
+        timeoutType: "default",
+        silent: !this.settings.sound,
+      },
+      { onClick: () => this.deps.focusWindow?.() },
     );
     return shown ? "raised" : "unsupported";
   }
