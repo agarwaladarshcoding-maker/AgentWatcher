@@ -1,37 +1,44 @@
 import { PtyManager } from "./pty/ptyManager";
 import { Interpreter } from "./interpreter/interpreter";
 import { selectProfile } from "./interpreter/profiles";
-import type { AgentProfile } from "./interpreter/profiles/types";
 import type {
   AgentState,
+  AppSettings,
   FeedEvent,
-  SessionInfo,
   PendingPermission,
-  Verdict,
+  PermissionAction,
+  RespondedDecision,
+  RespondedPermission,
+  SessionInfo,
 } from "../shared/types";
+import { DEFAULT_SETTINGS } from "../shared/types";
 import type { PtyExitInfo } from "../shared/ipc";
+import type { AuditStore } from "./store/db";
 
 /**
  * SessionManager — owns every agent session (architecture multi-agent model).
  * One agent = one PTY = one PID; the manager holds many at once, each with its
- * own interpreter + profile. One OS process per agent (no double compute, §18);
- * its single stream is teed to all viewers.
+ * own interpreter + profile. There is exactly one OS process per agent (no
+ * double compute, §18); its single stream is teed to all viewers.
  *
- * Size negotiation: a session can be viewed by the native terminal relay AND the
- * GUI mirror. A PTY has one size, so we make the GUI (the visible panel) the
- * authority when present — that keeps the on-screen mirror filling its panel —
- * falling back to the relay's native size before the GUI has reported.
+ * Viewers & size negotiation: a session can be viewed by several surfaces at
+ * once — the native terminal relay AND the GUI mirror. A PTY has only one size,
+ * so we set it to the MIN cols/rows across all viewers. That guarantees neither
+ * view overflows (the root cause of the scroll/cursor glitches).
  */
 export interface SessionSink {
-  onStart(info: SessionInfo): void;
   onData(id: string, chunk: string): void;
   onState(id: string, state: AgentState): void;
   onEvent(id: string, event: FeedEvent): void;
   onSize(id: string, cols: number, rows: number): void;
   onExit(id: string, info: PtyExitInfo): void;
-  onPermission(id: string, permission: PendingPermission): void;
-  onVerdict(id: string, verdict: Verdict): void;
   onListChanged(): void;
+  /** A new permission prompt is blocking a session. */
+  onPermissionPending(id: string, permission: PendingPermission): void;
+  /** A pending permission was cleared without an explicit UI verdict. */
+  onPermissionResolved(id: string, permissionId: string): void;
+  /** A permission moved to the Responded/audit list. */
+  onPermissionResponded(id: string, responded: RespondedPermission): void;
 }
 
 export interface CreateOptions {
@@ -42,28 +49,41 @@ export interface CreateOptions {
   rows: number;
 }
 
-const GUI_VIEWER = "gui";
-
 interface Session {
   info: SessionInfo;
   pty: PtyManager;
   interpreter: Interpreter;
-  profile: AgentProfile;
   viewers: Map<string, { cols: number; rows: number }>;
   pending: Map<string, PendingPermission>;
+  /** Last size actually pushed to the PTY; lets applySize skip redundant resizes. */
+  appliedSize?: { cols: number; rows: number };
 }
 
 export class SessionManager {
   private readonly sessions = new Map<string, Session>();
   private seq = 0;
-  private permSeq = 0;
-  private defaultResponses: { allow: string; deny: string } | null = null;
+  private settings: AppSettings = { ...DEFAULT_SETTINGS };
+  /**
+   * The viewer whose size wins when present (e.g. "gui" while the dashboard
+   * window is focused). When null we fall back to the MIN across all viewers.
+   * This fixes agents (gemini) rendering cramped in a big GUI just because a
+   * small native terminal relay is also attached.
+   */
+  private sizeAuthority: string | null = null;
 
-  constructor(private readonly sink: SessionSink) {}
+  /**
+   * Optional durable audit log (Phase 4). Best-effort: every call is guarded
+   * inside the store itself, so persistence can never break a live session.
+   */
+  constructor(
+    private readonly sink: SessionSink,
+    private readonly store?: AuditStore,
+  ) {}
 
-  /** Override the per-profile allow/deny bytes from user settings (Phase 4). */
-  setDefaultResponses(allow: string, deny: string): void {
-    this.defaultResponses = { allow, deny };
+  /** Emit a feed event to all viewers AND persist it to the audit log. */
+  private emitEvent(id: string, event: FeedEvent): void {
+    this.sink.onEvent(id, event);
+    this.store?.event(id, event);
   }
 
   list(): SessionInfo[] {
@@ -74,36 +94,62 @@ export class SessionManager {
     return this.sessions.has(id);
   }
 
-  /** Spawn a new agent session. `primaryViewerId` is the relay that requested it. */
+  getSettings(): AppSettings {
+    return { ...this.settings };
+  }
+
+  updateSettings(next: Partial<AppSettings>): void {
+    this.settings = { ...this.settings, ...next };
+  }
+
+  /** Spawn a new agent session. `primaryViewerId` is the relay/GUI that requested it. */
   create(opts: CreateOptions, primaryViewerId: string): SessionInfo {
     this.seq += 1;
     const id = `s${this.seq}`;
     const profile = selectProfile(opts.command);
     const commandLine = [opts.command, ...opts.args].join(" ").trim();
-
     const pty = new PtyManager();
+
     const interpreter = new Interpreter(profile, {
       onState: (state) => {
         const s = this.sessions.get(id);
         if (s) s.info.state = state;
         this.sink.onState(id, state);
       },
-      onEvent: (event) => this.sink.onEvent(id, event),
-      onPermission: (raw) => this.handlePermission(id, raw),
+      onEvent: (event) => this.emitEvent(id, event),
+      onPermission: (permission) => {
+        const s = this.sessions.get(id);
+        if (s) {
+          permission.sessionId = id;
+          s.pending.set(permission.id, permission);
+        }
+        this.sink.onPermissionPending(id, permission);
+      },
+      onPermissionResolved: (permissionId) => {
+        const s = this.sessions.get(id);
+        if (!s) return;
+        const p = s.pending.get(permissionId);
+        if (!p) return; // already answered via the UI, or cleared on exit
+        s.pending.delete(permissionId);
+        this.sink.onPermissionResolved(id, permissionId);
+        this.recordVerdict(id, p, "answered", "Answered in terminal");
+      },
     });
 
+    const nativeAttached = primaryViewerId.startsWith("relay");
     const info: SessionInfo = {
       id,
       command: opts.command,
       args: opts.args,
       commandLine: commandLine || opts.command,
-      label: commandLine || opts.command,
       profile: profile.name,
       pid: -1,
       state: "idle",
       startedAt: Date.now(),
       ended: false,
-      nativeAttached: true,
+      nativeAttached,
+      cwd: opts.cwd,
+      origin: nativeAttached ? "native" : "gui",
     };
 
     const viewers = new Map<string, { cols: number; rows: number }>();
@@ -116,7 +162,6 @@ export class SessionManager {
       info,
       pty,
       interpreter,
-      profile,
       viewers,
       pending: new Map(),
     };
@@ -129,8 +174,14 @@ export class SessionManager {
     pty.onExit((exit) => {
       info.ended = true;
       info.exitCode = exit.code;
-      session.pending.clear(); // agent gone: drop any unanswered prompts (§25)
+      // Clear any pending prompts silently — the process is gone (§25).
+      for (const pid of [...session.pending.keys()]) {
+        session.pending.delete(pid);
+        this.sink.onPermissionResolved(id, pid);
+      }
       interpreter.sessionEnd(exit.code, exit.signal);
+      interpreter.dispose();
+      this.store?.sessionEnded(id, exit.code);
       this.sink.onExit(id, exit);
       this.sink.onListChanged();
     });
@@ -143,9 +194,10 @@ export class SessionManager {
       cols: size.cols,
       rows: size.rows,
     });
+    session.appliedSize = { cols: size.cols, rows: size.rows };
     info.pid = pid;
     interpreter.sessionStart(pid, info.commandLine);
-    this.sink.onStart({ ...info });
+    this.store?.sessionStarted(info);
     this.sink.onListChanged();
     return { ...info };
   }
@@ -154,7 +206,85 @@ export class SessionManager {
     this.sessions.get(id)?.pty.write(data);
   }
 
-  /** A viewer reported its size; renegotiate the PTY size. */
+  /**
+   * Answer a pending permission from the UI: resolve the action to bytes, write
+   * them to the PTY (exactly what typing in the mirror would do), and log the
+   * verdict to the Responded/audit list.
+   */
+  respond(id: string, permissionId: string, action: PermissionAction): void {
+    const s = this.sessions.get(id);
+    if (!s) return;
+    const p = s.pending.get(permissionId);
+    if (!p) return;
+
+    const { send, decision, label } = this.resolveAction(p, action);
+    s.pty.write(send);
+    s.interpreter.acknowledgeResolved(permissionId);
+    s.pending.delete(permissionId);
+    this.recordVerdict(id, p, decision, label);
+  }
+
+  private resolveAction(
+    p: PendingPermission,
+    action: PermissionAction,
+  ): { send: string; decision: RespondedDecision; label: string } {
+    switch (action.type) {
+      case "allow":
+        return {
+          send: this.settings.allowInput || p.allowInput,
+          decision: "allow",
+          label: "Allowed",
+        };
+      case "deny":
+        return {
+          send: this.settings.denyInput || p.denyInput,
+          decision: "deny",
+          label: "Denied",
+        };
+      case "choice":
+        return { send: action.send, decision: "choice", label: action.label };
+      case "custom": {
+        const text = /[\r\n]$/.test(action.text)
+          ? action.text
+          : `${action.text}\r`;
+        return {
+          send: text,
+          decision: "custom",
+          label: `Sent “${action.text.trim().slice(0, 32)}”`,
+        };
+      }
+    }
+  }
+
+  private recordVerdict(
+    id: string,
+    p: PendingPermission,
+    decision: RespondedDecision,
+    label: string,
+  ): void {
+    const responded: RespondedPermission = {
+      id: p.id,
+      ts: p.ts,
+      decidedAt: Date.now(),
+      title: p.title,
+      source: p.source,
+      rawPrompt: p.rawPrompt,
+      decision,
+      label,
+    };
+    this.sink.onPermissionResponded(id, responded);
+    this.store?.verdict(id, responded);
+    this.emitEvent(id, {
+      id: `v${Date.now().toString(36)}-${p.id}`,
+      ts: Date.now(),
+      kind: "verdict",
+      state: decision === "deny" ? undefined : "working",
+      title: label,
+      detail: p.title,
+    });
+  }
+
+  /** A viewer reported its size; renegotiate the PTY size (min across viewers). */
   setViewerSize(id: string, viewerId: string, cols: number, rows: number): void {
     const s = this.sessions.get(id);
     if (!s || cols <= 0 || rows <= 0) return;
@@ -175,84 +305,52 @@ export class SessionManager {
     if (s.viewers.size > 0) this.applySize(s);
   }
 
-  /** Answer a pending permission: write the profile's allow/deny bytes to stdin. */
-  respond(id: string, permissionId: string, decision: "allow" | "deny"): void {
-    const s = this.sessions.get(id);
-    if (!s) return;
-    const pending = s.pending.get(permissionId);
-    if (!pending) return;
-    s.pending.delete(permissionId);
-
-    // No OS-level interception — the agent's own prompt is blocking; we only
-    // write bytes to stdin (§18). Manual typing in either terminal still works.
-    s.pty.write(decision === "allow" ? pending.allowInput : pending.denyInput);
-    // The interpreter's tail-based detection clears itself once the answered
-    // prompt scrolls past, so a genuine re-ask later still fires.
-
-    const verdict: Verdict = {
-      permissionId,
-      decision,
-      ts: Date.now(),
-      rawPrompt: pending.rawPrompt,
-    };
-    this.sink.onVerdict(id, verdict);
-    this.sink.onEvent(id, {
-      id: `v${permissionId}`,
-      ts: verdict.ts,
-      kind: "verdict",
-      title: decision === "allow" ? "Allowed" : "Denied",
-      detail: pending.rawPrompt,
-      state: decision === "allow" ? "writing" : undefined,
-    });
-  }
-
-  /** Rename a session's user-facing label. */
-  rename(id: string, name: string): void {
-    const s = this.sessions.get(id);
-    if (!s) return;
-    const trimmed = name.trim();
-    s.info.label = trimmed || s.info.commandLine;
-    this.sink.onListChanged();
-  }
-
   kill(id: string): void {
     this.sessions.get(id)?.pty.kill();
   }
 
+  /** Remove a session record entirely (after it has ended). */
   remove(id: string): void {
+    const s = this.sessions.get(id);
+    if (s) {
+      // Make sure a still-running process is stopped, and release its timer.
+      s.pty.kill();
+      s.interpreter.dispose();
+    }
     this.sessions.delete(id);
     this.sink.onListChanged();
   }
 
   killAll(): void {
-    for (const s of this.sessions.values()) s.pty.kill();
+    for (const s of this.sessions.values()) {
+      s.pty.kill();
+      s.interpreter.dispose();
+    }
   }
 
-  private handlePermission(id: string, raw: string): void {
-    const s = this.sessions.get(id);
-    if (!s) return;
-    this.permSeq += 1;
-    const norm = (v: string): string => (v.endsWith("\n") ? v : `${v}\n`);
-    const allow = norm(this.defaultResponses?.allow ?? s.profile.responses.allow);
-    const deny = norm(this.defaultResponses?.deny ?? s.profile.responses.deny);
-    const permission: PendingPermission = {
-      id: `p${this.permSeq}`,
-      ts: Date.now(),
-      title: "Permission requested",
-      source: s.info.label,
-      rawPrompt: raw.trim().slice(0, 240),
-      allowInput: allow,
-      denyInput: deny,
-    };
-    s.pending.set(permission.id, permission);
-    this.sink.onPermission(id, permission);
+  /**
+   * Set the viewer whose size is authoritative (e.g. "gui" when the dashboard
+   * is focused), or null to fall back to MIN across viewers. Renegotiates every
+   * live session so the change takes effect immediately.
+   */
+  setSizeAuthority(viewerId: string | null): void {
+    if (this.sizeAuthority === viewerId) return;
+    this.sizeAuthority = viewerId;
+    for (const s of this.sessions.values()) {
+      if (s.viewers.size > 0) this.applySize(s);
+    }
   }
 
-  /** GUI panel is the size authority when present; else the min of relays. */
   private negotiate(s: Session): { cols: number; rows: number } {
-    const gui = s.viewers.get(GUI_VIEWER);
-    if (gui && gui.cols > 0 && gui.rows > 0) return { ...gui };
-
+    // If an authoritative viewer is present for this session, it drives the
+    // size outright — so the focused GUI uses its full width even when a small
+    // native terminal is also mirroring the agent.
+    if (this.sizeAuthority) {
+      const authoritative = s.viewers.get(this.sizeAuthority);
+      if (authoritative && authoritative.cols > 0 && authoritative.rows > 0) {
+        return { cols: authoritative.cols, rows: authoritative.rows };
+      }
+    }
     let cols = Infinity;
     let rows = Infinity;
     for (const v of s.viewers.values()) {
@@ -266,6 +364,15 @@ export class SessionManager {
 
   private applySize(s: Session): void {
     const { cols, rows } = this.negotiate(s);
+    // Idempotent: a focus refit (or any caller) that computes the same size must
+    // not touch the PTY. Redundant resizes make full-screen TUIs repaint, which
+    // the interpreter would otherwise read as activity (the focus-switch flicker).
+    if (s.appliedSize && s.appliedSize.cols === cols && s.appliedSize.rows === rows) {
+      return;
+    }
+    s.appliedSize = { cols, rows };
+    // Tell the interpreter a repaint is imminent so it ignores the redraw bytes.
+    s.interpreter.noteResize();
     s.pty.resize(cols, rows);
     this.sink.onSize(s.info.id, cols, rows);
   }

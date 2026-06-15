@@ -50,18 +50,40 @@ if (wrapped.length === 0 || wrapped[0] === "-h" || wrapped[0] === "--help") {
       "AgentWatch — mirror any CLI agent and layer the words on top.",
       "",
       "Usage:",
-      "  agentwatch <command> [args...]",
+      "  agentwatch [--nodashboard] <command> [args...]",
+      "",
+      "Options:",
+      "  --nodashboard   Don't open the GUI window. You keep working in THIS",
+      "                  native terminal and only get OS notifications when an",
+      "                  agent needs you or finishes. Clicking a notification",
+      "                  brings AgentWatch (and your agent) back to the front.",
       "",
       "Examples:",
       "  agentwatch echo hello",
       "  agentwatch gemini",
+      "  agentwatch --nodashboard gemini",
       "  agentwatch ollama run llama3",
     ].join("\n"),
   );
   process.exit(wrapped.length === 0 ? 1 : 0);
 }
 
-const [command, ...args] = wrapped;
+// --nodashboard / --no-dashboard may appear anywhere before the command; strip
+// it out and remember the user's choice.
+let dashboard = true;
+const filtered = [];
+for (const arg of wrapped) {
+  if (arg === "--nodashboard" || arg === "--no-dashboard") {
+    dashboard = false;
+    continue;
+  }
+  filtered.push(arg);
+}
+if (filtered.length === 0) {
+  fail("no command given. Try `agentwatch --help`.");
+}
+
+const [command, ...args] = filtered;
 const SOCKET = socketPath();
 const appRoot = path.resolve(__dirname, "..");
 
@@ -92,7 +114,12 @@ function spawnPrimary() {
   const child = spawn(electronPath, [appRoot], {
     detached: true,
     stdio: "ignore",
-    env: { ...process.env, AGENTWATCH_PRIMARY: "1" },
+    env: {
+      ...process.env,
+      AGENTWATCH_PRIMARY: "1",
+      // Boot headless when the very first launcher asked for --nodashboard.
+      AGENTWATCH_NO_DASHBOARD: dashboard ? "" : "1",
+    },
   });
   child.unref();
 }
@@ -139,6 +166,7 @@ function startRelay(sock) {
       cwd: process.cwd(),
       cols: size.cols,
       rows: size.rows,
+      dashboard,
     }),
   );
 

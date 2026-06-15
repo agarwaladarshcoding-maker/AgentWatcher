@@ -217,6 +217,8 @@ Each phase has a hard **exit criterion**. We do not start the next phase until t
     - [x]  Allow/Deny writes correct input to PTY stdin
     - [x]  Verdict moves item to Responded tab + logs it
     - [x]  Manual typing in the mirror still works as fallback
+    - [x]  Numbered "choice" prompts (Gemini/Claude menus) parsed into one button per option, plus a free-text custom response (antigravity-style)
+    - [x]  OS notifications: click → focus + switch session; macOS Allow/Deny actions + inline reply
     
     **Exit criterion:** A real agent's permission prompt can be answered from the UI and the session continues correctly.
     
@@ -224,11 +226,11 @@ Each phase has a hard **exit criterion**. We do not start the next phase until t
 ### Phase 4 — Persistence, polish & packaging
 
 - Goal: a shippable, good-looking local-first MVP.
-    - [x]  Local store for audit log + session history
-    - [x]  Port v3 CSS/theme into the renderer properly
-    - [x]  Settings (profiles, default responses)
-    - [x]  Error/edge-case handling, empty states
-    - [x]  electron-builder installers for all 3 OSes *(config + `npm run package` in place; produce the actual installers by running it on each OS)*
+    - [ ]  Local store for audit log + session history
+    - [ ]  Port v3 CSS/theme into the renderer properly
+    - [ ]  Settings (profiles, default responses)
+    - [ ]  Error/edge-case handling, empty states
+    - [ ]  electron-builder installers for all 3 OSes
     
     **Exit criterion:** A fresh machine can install AgentWatch and run a full annotated, gated session.
     
@@ -238,7 +240,10 @@ Each phase has a hard **exit criterion**. We do not start the next phase until t
 - Explicitly NOT in v1 — parked here so we don't drift.
     - [x]  Multi-agent switching + multiple concurrent PTYs *(pulled forward — see §28)*
     - [x]  Search (filter agents by CLI name) *(pulled forward — see §28)*
-    - [ ]  User-editable profiles / pattern UI
+    - [x]  Start a new terminal/agent directly from the app (GUI-owned PTY)
+    - [x]  User-editable responses + settings (Allow/Deny bytes, notifications, sound)
+    - [x]  Session history view (in-app; SQLite audit log still pending in Phase 4)
+    - [ ]  Full user-editable profiles / pattern UI
     - [ ]  Session replay, export
     - [ ]  Remote/headless watching
 

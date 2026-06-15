@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AgentWatch Web</title>
+    <style>
+      :root {
+        --accent: #7f77dd;
+        --bg: #ffffff;
+        --surface: #f7f7f5;
+        --border: #ebebea;
+        --text: #191919;
+        --text-2: #787774;
+        --amber: #b8762a;
+        --green: #2f8f6b;
+        --neutral: #9b9892;
+      }
+      * { box-sizing: border-box; }
+      body {
+        font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+        font-size: 13px;
+        color: var(--text);
+        background: var(--bg);
+        width: 320px;
+        margin: 0;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+      }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+      .title { font-weight: 600; }
+      .counts { margin-left: auto; color: var(--text-2); font-size: 11px; }
+      .list { padding: 6px; max-height: 360px; overflow-y: auto; }
+      .empty { color: var(--text-2); text-align: center; padding: 24px 12px; }
+      .row {
+        display: flex; align-items: center; gap: 8px;
+        padding: 8px; border-radius: 8px;
+      }
+      .row:hover { background: var(--surface); }
+      .fav { width: 16px; height: 16px; border-radius: 3px; background: var(--surface); flex: 0 0 auto; }
+      .label { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .pill { margin-left: auto; font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 6px; }
+      .pill.working { color: var(--amber); background: #f6ecdc; }
+      .pill.done { color: var(--green); background: #e0f0e9; }
+      .pill.idle { color: var(--neutral); background: var(--surface); }
+      .goto {
+        border: 1px solid var(--border); background: var(--bg); color: var(--text);
+        border-radius: 6px; padding: 3px 7px; font-size: 11px; cursor: pointer;
+      }
+      .goto:hover { background: var(--surface); }
+      footer { border-top: 1px solid var(--border); padding: 10px 12px; }
+      .bridge-row { display: flex; align-items: center; gap: 6px; }
+      .bridge-status { font-size: 11px; color: var(--text-2); }
+      .bridge-status.on { color: var(--green); }
+      input {
+        flex: 1; font: inherit; font-size: 12px; padding: 5px 8px;
+        border: 1px solid var(--border); border-radius: 6px; outline: none; min-width: 0;
+      }
+      input:focus { border-color: var(--accent); }
+      button.pair {
+        border: none; background: var(--accent); color: #fff;
+        border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer;
+      }
+      .hint { font-size: 10px; color: var(--text-2); margin-top: 6px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span class="dot"></span>
+      <span class="title">AgentWatch</span>
+      <span class="counts" id="counts"></span>
+    </header>
+    <div class="list" id="list"></div>
+    <footer>
+      <div class="bridge-row">
+        <span class="bridge-status" id="bridgeStatus">Desktop app: not connected</span>
+      </div>
+      <div class="bridge-row" style="margin-top: 6px">
+        <input id="code" placeholder="Pairing code from desktop app" />
+        <button class="pair" id="pair">Pair</button>
+      </div>
+      <div class="hint">Optional. The extension works standalone without the app.</div>
+    </footer>
+    <script type="module" src="main.js"></script>
+  </body>
+</html>

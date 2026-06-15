@@ -1,49 +1,73 @@
 import stripAnsi from "strip-ansi";
-import type { AgentState, FeedEvent } from "../../shared/types";
+import type {
+  AgentState,
+  FeedEvent,
+  PendingPermission,
+  PermissionChoice,
+} from "../../shared/types";
 import type { AgentProfile } from "./profiles/types";
 
 /**
- * The interpreter turns a tee'd, ANSI-stripped copy of the PTY stream into
- * structured state + feed events — "the words" (architecture doc §4.2, §20).
+ * The interpreter turns a tee'd copy of the PTY stream into a SIMPLE, robust
+ * state — plus permission prompts — "the words" (architecture doc §4.2, §4.3).
  *
- * Invariants it must honor (§18):
- *   - Runs on a COPY only. Never mutates, delays, buffers, or reorders the
- *     mirror stream — feed() is called after the verbatim bytes already left.
- *   - If anything throws, the mirror keeps working: feed() swallows its errors.
+ * State is derived from the FLOW of output, not fragile per-CLI regexes:
  *
- * State resolution is most-specific-wins (§21):
- *   permission > waiting > writing > thinking > reading > done > idle
+ *   - Output is streaming            → working
+ *   - Output went quiet after work   → completed  (a "finished a turn" pulse)
+ *   - …and stays quiet a bit longer  → idle
+ *   - A permission prompt is detected → waiting   (overrides; control plane)
  *
- * For reading/writing it also extracts the file being touched so the event feed
- * can say *which* file (e.g. "Reading · src/auth/login.js").
+ * This works for ANY agent (gemini, claude, kiro, bash, …) because every agent
+ * produces output while busy and falls silent when it hands control back. No
+ * profile tuning is needed for state; profiles only describe permission prompts.
+ *
+ * Invariants (§18): runs on a COPY only, never mutates/delays/reorders the
+ * mirror, and swallows its own errors so interpretation can never break the
+ * terminal.
  */
-const STATE_PRIORITY: AgentState[] = [
-  "waiting",
-  "writing",
-  "thinking",
-  "reading",
-  "done",
-  "idle",
-];
 
 const STATE_TITLES: Record<AgentState, string> = {
   idle: "Idle",
-  reading: "Reading",
-  thinking: "Thinking",
-  writing: "Writing",
+  working: "Working",
   waiting: "Waiting for input",
-  done: "Done",
+  completed: "Completed",
 };
 
-// A path-ish token: optional dirs, a name, and a letter-initial extension
-// (so version numbers like "v1.0" are not mistaken for files).
-const FILE_TOKEN = /[^\s"'`()[\]]+\.[A-Za-z][A-Za-z0-9]{0,7}\b/g;
+// A numbered menu option line, e.g. "  1. Full Search", "❯ 2. Yes", "● 3. …".
+const CHOICE_LINE = /^[●❯>*\-]?\s*(\d{1,2})[.)]\s+(\S.*)$/;
 
 export interface InterpreterEmit {
   onState: (state: AgentState) => void;
   onEvent: (event: FeedEvent) => void;
-  /** A permission prompt was detected; raw is the matched prompt text. */
-  onPermission: (raw: string) => void;
+  /** A new permission prompt is blocking the agent. */
+  onPermission: (permission: PendingPermission) => void;
+  /** The active permission was cleared without an explicit UI verdict. */
+  onPermissionResolved: (permissionId: string) => void;
+}
+
+/** Timing thresholds for the activity-based state machine (overridable for tests). */
+export interface InterpreterOptions {
+  /** Quiet time after output stops before a working burst is "completed". */
+  quietMs?: number;
+  /** Quiet time after "completed" before settling back to "idle". */
+  idleMs?: number;
+  /** A burst shorter than this AND smaller than minWorkBytes won't fire "completed". */
+  minWorkMs?: number;
+  minWorkBytes?: number;
+  /** How often the timer re-evaluates the state. */
+  tickMs?: number;
+  /**
+   * After a PTY resize (SIGWINCH), full-screen agent TUIs repaint their whole
+   * UI. Those repaint bytes are NOT agent activity. For this long, output is
+   * treated as a repaint and ignored by the activity state machine.
+   */
+  resizeGraceMs?: number;
+}
+
+function envNum(key: string, fallback: number): number {
+  const v = Number(process.env[key]);
+  return Number.isFinite(v) && v > 0 ? v : fallback;
 }
 
 let sequence = 0;
@@ -58,78 +82,138 @@ function makeEvent(partial: Omit<FeedEvent, "id" | "ts">): FeedEvent {
 
 export class Interpreter {
   private buffer = "";
-  private currentState: AgentState | null = null;
-  private lastTarget: string | null = null;
-  private lastPermissionHash: string | null = null;
+  private state: AgentState = "idle";
+  private activePermission: PendingPermission | null = null;
+  private activePermissionHash: string | null = null;
+
+  // Activity tracking for the timing-based state machine.
+  private lastOutputAt = 0;
+  private workStartedAt = 0;
+  private workBytes = 0;
+  private timer: ReturnType<typeof setInterval> | null = null;
+  /** When the last PTY resize happened; output within the grace window is a repaint. */
+  private lastResizeAt = 0;
+
   private static readonly MAX_BUFFER = 8192;
-  private static readonly SCAN_LINES = 10;
-  private static readonly PERM_TAIL = 400;
+  private readonly quietMs: number;
+  private readonly idleMs: number;
+  private readonly minWorkMs: number;
+  private readonly minWorkBytes: number;
+  private readonly tickMs: number;
+  private readonly resizeGraceMs: number;
 
   constructor(
     private readonly profile: AgentProfile,
     private readonly emit: InterpreterEmit,
-  ) {}
+    options?: InterpreterOptions,
+  ) {
+    this.quietMs = options?.quietMs ?? envNum("AGENTWATCH_QUIET_MS", 700);
+    this.idleMs = options?.idleMs ?? envNum("AGENTWATCH_IDLE_MS", 1500);
+    this.minWorkMs = options?.minWorkMs ?? envNum("AGENTWATCH_MIN_WORK_MS", 350);
+    this.minWorkBytes =
+      options?.minWorkBytes ?? envNum("AGENTWATCH_MIN_WORK_BYTES", 24);
+    this.tickMs = options?.tickMs ?? envNum("AGENTWATCH_TICK_MS", 200);
+    this.resizeGraceMs =
+      options?.resizeGraceMs ?? envNum("AGENTWATCH_RESIZE_GRACE_MS", 400);
+  }
+
+  /**
+   * Tell the interpreter a PTY resize just happened. The agent TUI will repaint
+   * itself in response; those bytes are NOT activity, so for the next
+   * `resizeGraceMs` we ignore output for state purposes (permission detection
+   * still runs). Called by the SessionManager around every real `pty.resize`.
+   */
+  noteResize(): void {
+    this.lastResizeAt = Date.now();
+  }
 
   /** Feed a tee'd copy of a raw PTY chunk. Strips ANSI internally. */
   feed(chunk: string): void {
     try {
-      this.buffer = (this.buffer + stripAnsi(chunk)).slice(
-        -Interpreter.MAX_BUFFER,
-      );
+      const clean = stripAnsi(chunk);
+      this.buffer = (this.buffer + clean).slice(-Interpreter.MAX_BUFFER);
+      const now = Date.now();
 
-      // Permission is the most specific signal. Only treat it as LIVE when the
-      // prompt is at the tail of the buffer (the agent just printed it). Once
-      // output appears after it (answered / scrolled), it's stale — we clear the
-      // de-dupe key so a later, genuine re-ask fires again.
-      const tail = this.buffer.slice(-Interpreter.PERM_TAIL);
+      // Permission is the most specific signal; test the whole tail since a
+      // prompt can span chunk boundaries.
       let permissionMatch: string | null = null;
       for (const re of this.profile.match.permission) {
-        const m = tail.match(re);
+        const m = this.buffer.match(re);
         if (m) {
           permissionMatch = m[0];
           break;
         }
       }
-
       if (permissionMatch) {
-        this.transition("waiting");
         this.notePermission(permissionMatch);
+        this.setState("waiting");
         return;
       }
-      this.lastPermissionHash = null;
 
-      // Otherwise scan the most RECENT classifiable line (newest-first). The very
-      // last line is often a prompt box / spinner frame with no signal; skipping
-      // to the newest meaningful line tracks TUI agents far better than only
-      // looking at the final line.
-      const recent = this.recentLines(Interpreter.SCAN_LINES);
-      for (const line of recent) {
-        const state = this.classify(line);
-        if (state) {
-          const target =
-            (state === "reading" || state === "writing") && line
-              ? this.extractTarget(line)
-              : undefined;
-          this.transition(state, target);
-          break;
+      // Any output at all is "activity". The agent visibly moved on, so a prompt
+      // it was blocking on has been answered (in the terminal or by us).
+      if (clean.length > 0) {
+        // …unless this output is a repaint triggered by a recent PTY resize.
+        // Full-screen TUIs redraw their whole UI on SIGWINCH; counting that as
+        // work is what made the state flicker working↔completed when the user
+        // switched focus between apps. The buffer (above) is already updated for
+        // permission detection; we just don't let the repaint drive activity.
+        if (now - this.lastResizeAt < this.resizeGraceMs) {
+          return;
         }
+        if (this.activePermission && clean.trim().length > 0) {
+          this.resolveActivePermission();
+        }
+        this.lastOutputAt = now;
+        if (this.state === "working") {
+          this.workBytes += clean.length;
+        } else {
+          this.workStartedAt = now;
+          this.workBytes = clean.length;
+          this.setState("working");
+        }
+        this.ensureTimer();
       }
     } catch {
       // Interpretation must never break the mirror.
     }
   }
 
-  /** Discard the permission de-dupe key (after a verdict, so a repeat re-fires). */
-  clearPermission(): void {
-    this.lastPermissionHash = null;
+  /** Periodic re-evaluation: working → completed → idle based on quiet time. */
+  private tick(): void {
+    try {
+      const now = Date.now();
+      const quietFor = now - this.lastOutputAt;
+
+      if (this.state === "working" && quietFor >= this.quietMs) {
+        const burstMs = this.lastOutputAt - this.workStartedAt;
+        const meaningful =
+          this.workBytes >= this.minWorkBytes || burstMs >= this.minWorkMs;
+        this.workBytes = 0;
+        if (meaningful) {
+          this.setState("completed");
+        } else {
+          // Trivial blip (e.g. a couple of echoed keystrokes) → just rest.
+          this.setState("idle", false);
+          this.stopTimerIfResting();
+        }
+      } else if (this.state === "completed" && quietFor >= this.idleMs) {
+        this.setState("idle", false);
+        this.stopTimerIfResting();
+      } else if (this.state === "idle" || this.state === "waiting") {
+        this.stopTimerIfResting();
+      }
+    } catch {
+      /* never break the mirror */
+    }
   }
 
-  /** Emit the session-start event and reset to idle. */
   sessionStart(pid: number, command: string): void {
     this.buffer = "";
-    this.currentState = null;
-    this.lastTarget = null;
-    this.lastPermissionHash = null;
+    this.state = "idle";
+    this.activePermission = null;
+    this.activePermissionHash = null;
+    this.workBytes = 0;
     this.emit.onEvent(
       makeEvent({
         kind: "session_start",
@@ -137,10 +221,12 @@ export class Interpreter {
         detail: `pid ${pid} · ${command}`,
       }),
     );
-    this.transition("idle");
+    this.emit.onState("idle");
   }
 
   sessionEnd(code: number, signal?: number): void {
+    if (this.activePermission) this.resolveActivePermission();
+    this.stopTimer();
     const sig = signal ? `, signal ${signal}` : "";
     this.emit.onEvent(
       makeEvent({
@@ -149,73 +235,164 @@ export class Interpreter {
         detail: `exit code ${code}${sig}`,
       }),
     );
-    this.transition("done");
+    this.state = "completed";
+    this.emit.onState("completed");
   }
 
-  /** The last `limit` non-empty lines, newest first. */
-  private recentLines(limit: number): string[] {
-    const out: string[] = [];
-    const lines = this.buffer.split(/\r?\n/);
-    for (let i = lines.length - 1; i >= 0 && out.length < limit; i -= 1) {
-      const trimmed = lines[i].trim();
-      if (trimmed !== "") out.push(trimmed);
-    }
-    return out;
-  }
-
-  private classify(line: string): AgentState | null {
-    for (const state of STATE_PRIORITY) {
-      const regexes = this.profile.match.state[state];
-      if (regexes && regexes.some((r) => r.test(line))) return state;
-    }
-    return null;
-  }
-
-  /** Pull the most likely file path out of a line, if any. */
-  private extractTarget(line: string): string | undefined {
-    const tokens = line.match(FILE_TOKEN);
-    if (!tokens || tokens.length === 0) return undefined;
-    // The last token is usually the operand (e.g. "Reading file src/app.ts").
-    return tokens[tokens.length - 1];
+  /** Release the timer (call when the session is gone). */
+  dispose(): void {
+    this.stopTimer();
   }
 
   /**
-   * Move to a state and/or a new target. Emits a state event when the state
-   * changes OR when the same state touches a new file, so the feed lists each
-   * file (e.g. several "Reading" entries with different detail).
+   * Called when the UI (or terminal) has answered the active permission, so the
+   * interpreter forgets it and can detect the next prompt cleanly.
    */
-  private transition(state: AgentState, target?: string): void {
-    const stateChanged = state !== this.currentState;
-    const targetChanged = Boolean(target) && target !== this.lastTarget;
-    if (!stateChanged && !targetChanged) return;
+  acknowledgeResolved(permissionId: string): void {
+    if (this.activePermission && this.activePermission.id === permissionId) {
+      this.activePermission = null;
+      this.activePermissionHash = null;
+    }
+  }
 
-    this.currentState = state;
-    if (target) this.lastTarget = target;
+  private resolveActivePermission(): void {
+    const p = this.activePermission;
+    if (!p) return;
+    this.activePermission = null;
+    this.activePermissionHash = null;
+    this.emit.onPermissionResolved(p.id);
+  }
 
-    if (stateChanged) this.emit.onState(state);
+  private ensureTimer(): void {
+    if (!this.timer) {
+      this.timer = setInterval(() => this.tick(), this.tickMs);
+      // Don't keep the event loop alive just for interpretation.
+      (this.timer as { unref?: () => void }).unref?.();
+    }
+  }
 
-    this.emit.onEvent(
-      makeEvent({
-        kind: "state_change",
-        state,
-        title: STATE_TITLES[state],
-        detail: target,
-      }),
-    );
+  private stopTimer(): void {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  }
+
+  private stopTimerIfResting(): void {
+    if (this.state === "idle") this.stopTimer();
+  }
+
+  /** Move to a state; emit onState always, and a feed event for non-idle states. */
+  private setState(next: AgentState, emitEvent = true): void {
+    if (next === this.state) return;
+    this.state = next;
+    this.emit.onState(next);
+    if (emitEvent && next !== "idle") {
+      this.emit.onEvent(
+        makeEvent({
+          kind: "state_change",
+          state: next,
+          title: STATE_TITLES[next],
+        }),
+      );
+    }
+  }
+
+  /** Parse a numbered menu out of the buffer tail (for "choice" prompts). */
+  private parseChoices(): PermissionChoice[] {
+    const lines = this.buffer.split(/\r?\n/);
+    const byNum = new Map<number, string>();
+    for (const raw of lines) {
+      const cleaned = raw.replace(/[│|┃╮╯╰╭┌┐└┘]/g, " ").trim();
+      const m = cleaned.match(CHOICE_LINE);
+      if (!m) continue;
+      const n = Number.parseInt(m[1], 10);
+      if (n < 1 || n > 12) continue;
+      const label = m[2]
+        .replace(/\s{2,}.*$/, "")
+        .replace(/\s+\(esc\)$/i, "")
+        .trim();
+      if (label) byNum.set(n, label.slice(0, 64));
+    }
+    if (byNum.size < 2) return [];
+    return [...byNum.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([n, label]) => ({ label: `${n}. ${label}`, send: `${n}\r` }));
+  }
+
+  /** A short, human-readable snapshot of the prompt for the card body. */
+  private promptSnapshot(): string {
+    const lines = this.buffer
+      .split(/\r?\n/)
+      .map((l) => l.replace(/[│|┃╮╯╰╭┌┐└┘]/g, "").trimEnd())
+      .filter((l) => l.trim() !== "");
+    return lines.slice(-6).join("\n").trim().slice(0, 600);
+  }
+
+  /**
+   * Collapse a prompt to its STABLE skeleton for de-dupe: drop spinner glyphs,
+   * box-drawing, every digit (timers / elapsed seconds / context %), and
+   * whitespace runs. Two redraws of the same dialog hash identically even as
+   * their live counters tick — so we never re-emit (and never re-notify).
+   */
+  private normalizeForHash(s: string): string {
+    return s
+      .replace(/[\u2800-\u28FF]/g, " ") // braille spinner frames
+      .replace(/[●○◐◓◑◒◌◍⣾⣽⣻⢿⡿⣟⣯⣷|/\\]+/g, " ") // other spinner/sep glyphs
+      .replace(/[│┃╮╯╰╭┌┐└┘─-]+/g, " ") // box drawing
+      .replace(/\d+/g, "#") // timers, percentages, counts
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 200);
   }
 
   private notePermission(raw: string): void {
-    const hash = raw.trim().slice(0, 120);
-    if (hash === this.lastPermissionHash) return;
-    this.lastPermissionHash = hash;
+    const choices = this.parseChoices();
+    const snapshot = this.promptSnapshot();
+    // Hash on a NORMALIZED view of the prompt so volatile content — live
+    // timers ("12s"), spinner glyphs, context-% counters that full-screen CLIs
+    // (e.g. Gemini) redraw constantly — never looks like a brand-new prompt.
+    // Without this, each redraw minted a new permission id and re-fired a
+    // notification every few seconds.
+    const hash = `${this.normalizeForHash(snapshot || raw)}::${choices.length}`;
+    if (hash === this.activePermissionHash) return; // same prompt still showing
+    if (this.activePermission) this.resolveActivePermission(); // a new prompt replaced it
+    this.activePermissionHash = hash;
+
+    const kind: PendingPermission["kind"] =
+      choices.length >= 2 ? "choice" : "confirm";
+    const permission: PendingPermission = {
+      id: nextId(),
+      ts: Date.now(),
+      title: this.permissionTitle(raw, kind),
+      source: this.profile.name,
+      rawPrompt: snapshot || raw.trim(),
+      kind,
+      choices: kind === "choice" ? choices : undefined,
+      allowInput: this.profile.responses.allow,
+      denyInput: this.profile.responses.deny,
+    };
+    this.activePermission = permission;
+
+    this.emit.onPermission(permission);
     this.emit.onEvent(
       makeEvent({
         kind: "permission_needed",
         state: "waiting",
-        title: "Permission needed",
-        detail: hash,
+        title: permission.title,
+        detail: raw.trim().slice(0, 120),
       }),
     );
-    this.emit.onPermission(raw);
+  }
+
+  private permissionTitle(raw: string, kind: PendingPermission["kind"]): string {
+    const lower = raw.toLowerCase();
+    if (/\b(write|edit|create|replace|patch|apply)\b/.test(lower))
+      return "Write permission needed";
+    if (/\b(run|execute|exec|command|shell)\b/.test(lower))
+      return "Run permission needed";
+    if (/\bdelete|remove\b/.test(lower)) return "Delete permission needed";
+    if (kind === "choice") return "Agent needs a decision";
+    return "Permission needed";
   }
 }

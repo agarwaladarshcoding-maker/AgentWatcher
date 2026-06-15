@@ -9,14 +9,22 @@ import {
   type SessionExitMsg,
   type SessionInputMsg,
   type SessionResizeMsg,
-  type SessionRespondMsg,
-  type SessionRenameMsg,
-  type SessionPermissionMsg,
-  type SessionVerdictMsg,
-  type HistoryFilter,
-  type HistoryRow,
-  type AppSettings,
+  type SessionSpawnMsg,
+  type PermissionPendingMsg,
+  type PermissionResolvedMsg,
+  type PermissionRespondedMsg,
+  type PermissionRespondMsg,
+  type BrowserListMsg,
+  type BrowserStateMsg,
+  type BrowserCompletedMsg,
+  type BridgeStatusMsg,
 } from "../shared/ipc";
+import type {
+  AppSettings,
+  HistoryDetail,
+  HistorySessionRow,
+  PermissionAction,
+} from "../shared/types";
 
 /**
  * The preload bridge — the ONLY surface that crosses from main to the renderer
@@ -68,34 +76,14 @@ const api = {
   close(id: string): void {
     ipcRenderer.send(IPC.sessionClose, id);
   },
-  rename(id: string, name: string): void {
-    ipcRenderer.send(IPC.sessionRename, { id, name } satisfies SessionRenameMsg);
+  remove(id: string): void {
+    ipcRenderer.send(IPC.sessionRemove, id);
   },
-
-  // --- permission control plane ---
-  onPermission(callback: (msg: SessionPermissionMsg) => void): () => void {
-    return subscribe<SessionPermissionMsg>(IPC.sessionPermission, callback);
+  spawn(opts: SessionSpawnMsg): Promise<SessionInfo | null> {
+    return ipcRenderer.invoke(IPC.sessionSpawn, opts);
   },
-  onVerdict(callback: (msg: SessionVerdictMsg) => void): () => void {
-    return subscribe<SessionVerdictMsg>(IPC.sessionVerdict, callback);
-  },
-  respond(id: string, permissionId: string, decision: "allow" | "deny"): void {
-    ipcRenderer.send(IPC.sessionRespond, {
-      id,
-      permissionId,
-      decision,
-    } satisfies SessionRespondMsg);
-  },
-
-  // --- audit log + settings (Phase 4) ---
-  getHistory(filter: HistoryFilter = {}): Promise<HistoryRow[]> {
-    return ipcRenderer.invoke(IPC.historyQuery, filter);
-  },
-  getSettings(): Promise<AppSettings> {
-    return ipcRenderer.invoke(IPC.settingsGet);
-  },
-  setSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
-    return ipcRenderer.invoke(IPC.settingsSet, patch);
+  onFocusSession(callback: (id: string) => void): () => void {
+    return subscribe<string>(IPC.sessionFocus, callback);
   },
 
   // --- the words ---
@@ -104,6 +92,94 @@ const api = {
   },
   onEvent(callback: (msg: SessionEventMsg) => void): () => void {
     return subscribe<SessionEventMsg>(IPC.sessionEvent, callback);
+  },
+
+  // --- permission control plane (Phase 3) ---
+  onPermissionPending(
+    callback: (msg: PermissionPendingMsg) => void,
+  ): () => void {
+    return subscribe<PermissionPendingMsg>(IPC.permissionPending, callback);
+  },
+  onPermissionResolved(
+    callback: (msg: PermissionResolvedMsg) => void,
+  ): () => void {
+    return subscribe<PermissionResolvedMsg>(IPC.permissionResolved, callback);
+  },
+  onPermissionResponded(
+    callback: (msg: PermissionRespondedMsg) => void,
+  ): () => void {
+    return subscribe<PermissionRespondedMsg>(IPC.permissionResponded, callback);
+  },
+  respondPermission(
+    id: string,
+    permissionId: string,
+    action: PermissionAction,
+  ): void {
+    ipcRenderer.send(IPC.permissionRespond, {
+      id,
+      permissionId,
+      action,
+    } satisfies PermissionRespondMsg);
+  },
+
+  // --- settings ---
+  updateSettings(settings: AppSettings): void {
+    ipcRenderer.send(IPC.settingsUpdate, settings);
+  },
+
+  // --- history / audit log (Phase 4) ---
+  queryHistory(limit?: number): Promise<HistorySessionRow[]> {
+    return ipcRenderer.invoke(IPC.historyQuery, limit);
+  },
+  queryHistoryDetail(key: string): Promise<HistoryDetail> {
+    return ipcRenderer.invoke(IPC.historyDetail, key);
+  },
+  clearHistory(): Promise<boolean> {
+    return ipcRenderer.invoke(IPC.historyClear);
+  },
+  exportHistory(
+    key: string,
+    format: "json" | "md",
+  ): Promise<{ ok: boolean; path?: string }> {
+    return ipcRenderer.invoke(IPC.historyExport, key, format);
+  },
+
+  // --- debug ---
+  sendDebugTestNotification(): void {
+    ipcRenderer.send(IPC.debugTestNotification);
+  },
+
+  // --- browser bonding (Chrome section) ---
+  onBrowserList(callback: (msg: BrowserListMsg) => void): () => void {
+    return subscribe<BrowserListMsg>(IPC.browserList, callback);
+  },
+  onBrowserState(callback: (msg: BrowserStateMsg) => void): () => void {
+    return subscribe<BrowserStateMsg>(IPC.browserState, callback);
+  },
+  onBrowserCompleted(
+    callback: (msg: BrowserCompletedMsg) => void,
+  ): () => void {
+    return subscribe<BrowserCompletedMsg>(IPC.browserCompleted, callback);
+  },
+  onBridgeStatus(callback: (msg: BridgeStatusMsg) => void): () => void {
+    return subscribe<BridgeStatusMsg>(IPC.bridgeStatus, callback);
+  },
+  getBridgeStatus(): Promise<BridgeStatusMsg> {
+    return ipcRenderer.invoke(IPC.bridgeStatusGet);
+  },
+  focusBrowserTab(tabId: number): void {
+    ipcRenderer.send(IPC.browserFocus, tabId);
+  },
+  replyBrowserTab(tabId: number, text: string): void {
+    ipcRenderer.send(IPC.browserReply, { tabId, text });
+  },
+
+  // --- lifecycle / dialogs ---
+  appReady(): Promise<{ ready: boolean; nodashboard: boolean; home: string }> {
+    return ipcRenderer.invoke(IPC.appReady);
+  },
+  pickDirectory(current?: string): Promise<string | null> {
+    return ipcRenderer.invoke(IPC.dialogPickDirectory, current);
   },
 };
 

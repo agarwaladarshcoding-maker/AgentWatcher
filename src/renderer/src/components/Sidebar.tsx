@@ -1,56 +1,64 @@
 import { useState } from "react";
 import { useSessions } from "../store/sessions";
-import type { AgentState } from "../../../shared/types";
+import { ConfirmDialog } from "./ConfirmDialog";
+import type { AgentState, SessionInfo } from "../../../shared/types";
 
 const STATE_LABEL: Record<AgentState, string> = {
   idle: "Idle",
-  reading: "Reading",
-  thinking: "Thinking",
-  writing: "Writing",
+  working: "Working",
   waiting: "Waiting",
-  done: "Done",
+  completed: "Completed",
 };
 
 /**
  * Left sidebar: every running/finished agent, a search box to filter by the CLI
- * tool's name, one-click switching, inline rename, and close.
+ * tool's name, one-click switching, a "+" to start a new terminal, a pending
+ * pip per agent, and a safe close button (warns before terminating a live
+ * session; just dismisses an ended one).
  */
-export function Sidebar(): JSX.Element {
+export function Sidebar({
+  onNewTerminal,
+}: {
+  onNewTerminal: () => void;
+}): JSX.Element {
   const sessions = useSessions((s) => s.sessions);
   const activeId = useSessions((s) => s.activeId);
   const states = useSessions((s) => s.states);
+  const pending = useSessions((s) => s.pending);
   const setActive = useSessions((s) => s.setActive);
 
   const [query, setQuery] = useState("");
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [draft, setDraft] = useState("");
+  const [confirm, setConfirm] = useState<SessionInfo | null>(null);
 
   const q = query.trim().toLowerCase();
   const filtered = q
     ? sessions.filter(
         (s) =>
-          s.label.toLowerCase().includes(q) ||
           s.commandLine.toLowerCase().includes(q) ||
           s.command.toLowerCase().includes(q) ||
           s.profile.toLowerCase().includes(q),
       )
     : sessions;
 
-  const beginRename = (id: string, current: string): void => {
-    setEditingId(id);
-    setDraft(current);
+  // Ended → dismiss (remove the record). Running → confirm before terminating.
+  const onClose = (s: SessionInfo): void => {
+    if (s.ended) window.agentwatch.remove(s.id);
+    else setConfirm(s);
   };
-  const commitRename = (id: string): void => {
-    window.agentwatch.rename(id, draft);
-    setEditingId(null);
-  };
-  const close = (id: string): void => window.agentwatch.close(id);
 
   return (
     <nav className="sidebar" aria-label="Agents">
       <div className="sidebar-head">
         <span className="sidebar-title">Agents</span>
         <span className="sidebar-count">{sessions.length}</span>
+        <button
+          className="new-terminal-btn"
+          onClick={onNewTerminal}
+          aria-label="New terminal"
+          title="New terminal"
+        >
+          +
+        </button>
       </div>
 
       <div className="search">
@@ -84,75 +92,74 @@ export function Sidebar(): JSX.Element {
         ) : (
           filtered.map((s) => {
             const state: AgentState = s.ended
-              ? "done"
+              ? "completed"
               : (states[s.id] ?? s.state);
-            const live = !s.ended && state !== "idle";
-            const editing = editingId === s.id;
+            const live = !s.ended && state === "working";
+            const pendingCount = pending[s.id]?.length ?? 0;
             return (
               <li
                 key={s.id}
-                className={`agent-item ${s.id === activeId ? "active" : ""}`}
+                className={`agent-item ${s.id === activeId ? "active" : ""} ${
+                  s.ended ? "ended" : ""
+                }`}
               >
-                {editing ? (
-                  <input
-                    className="rename-input"
-                    autoFocus
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    onBlur={() => commitRename(s.id)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") commitRename(s.id);
-                      if (e.key === "Escape") setEditingId(null);
-                    }}
-                    aria-label="Rename agent"
+                <button
+                  className="agent-item-btn"
+                  onClick={() => setActive(s.id)}
+                  title={s.commandLine}
+                >
+                  <span
+                    className={`state-dot state-${state} ${live ? "pulse" : ""}`}
+                    aria-hidden="true"
                   />
-                ) : (
-                  <>
-                    <button
-                      className="agent-item-btn"
-                      onClick={() => setActive(s.id)}
-                      onDoubleClick={() => beginRename(s.id, s.label)}
-                      title={s.commandLine}
-                    >
+                  <span className="agent-item-main">
+                    <span className="agent-item-name">{s.command}</span>
+                    <span className="agent-item-sub">
+                      {s.ended ? `exited (${s.exitCode ?? 0})` : `pid ${s.pid}`}
+                    </span>
+                  </span>
+                  <span className="agent-item-badges">
+                    {pendingCount > 0 && (
                       <span
-                        className={`state-dot state-${state} ${live ? "pulse" : ""}`}
-                        aria-hidden="true"
-                      />
-                      <span className="agent-item-main">
-                        <span className="agent-item-name">{s.label}</span>
-                        <span className="agent-item-sub">
-                          {s.ended
-                            ? `exited (${s.exitCode ?? 0})`
-                            : `pid ${s.pid}`}
-                        </span>
+                        className="pending-pip"
+                        title={`${pendingCount} pending`}
+                      >
+                        {pendingCount}
                       </span>
-                      <span className={`state-pill state-${state}`}>
-                        {s.ended ? "Done" : STATE_LABEL[state]}
-                      </span>
-                    </button>
-                    <button
-                      className="agent-icon-btn"
-                      onClick={() => beginRename(s.id, s.label)}
-                      aria-label={`Rename ${s.label}`}
-                      title="Rename"
-                    >
-                      ✎
-                    </button>
-                    <button
-                      className="agent-icon-btn close"
-                      onClick={() => close(s.id)}
-                      aria-label={`Close ${s.label}`}
-                      title="Close session"
-                    >
-                      ×
-                    </button>
-                  </>
-                )}
+                    )}
+                    <span className={`state-pill state-${state}`}>
+                      {s.ended ? "Completed" : STATE_LABEL[state]}
+                    </span>
+                  </span>
+                </button>
+                <button
+                  className="agent-close"
+                  onClick={() => onClose(s)}
+                  aria-label={s.ended ? `Dismiss ${s.command}` : `Close ${s.command}`}
+                  title={s.ended ? "Dismiss from list" : "Terminate session"}
+                >
+                  ×
+                </button>
               </li>
             );
           })
         )}
       </ul>
+
+      {confirm && (
+        <ConfirmDialog
+          title="Terminate session?"
+          message={`This will stop "${confirm.commandLine}" (pid ${confirm.pid}).`}
+          warn={
+            confirm.nativeAttached
+              ? "It is also mirrored in a native terminal — that terminal will end too."
+              : undefined
+          }
+          confirmLabel="Terminate"
+          onConfirm={() => window.agentwatch.close(confirm.id)}
+          onClose={() => setConfirm(null)}
+        />
+      )}
     </nav>
   );
 }

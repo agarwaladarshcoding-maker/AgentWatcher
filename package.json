@@ -13,6 +13,42 @@
   "bin": {
     "agentwatch": "./bin/agentwatch.js"
   },
+  "build": {
+    "appId": "com.agentwatch.app",
+    "productName": "AgentWatch",
+    "directories": {
+      "output": "release",
+      "buildResources": "resources"
+    },
+    "files": [
+      "out/**/*",
+      "bin/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/node_modules/node-pty/**",
+      "**/node_modules/better-sqlite3/**"
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.developer-tools"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development"
+    }
+  },
   "scripts": {
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
@@ -20,16 +56,23 @@
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "selfcheck": "node scripts/selfcheck.mjs",
+    "notif-test": "node scripts/notif-test.mjs",
+    "scenarios-test": "node scripts/scenarios-test.mjs",
+    "bridge-test": "node scripts/bridge-test.mjs",
+    "verify": "npm run selfcheck && npm run notif-test && npm run scenarios-test && npm run bridge-test",
     "rebuild": "electron-rebuild -f -w node-pty,better-sqlite3",
     "package": "npm run build && electron-builder",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
+    "@types/ws": "^8.18.1",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
     "better-sqlite3": "^11.0.0",
     "node-pty": "^1.0.0",
     "strip-ansi": "^7.1.0",
+    "ws": "^8.21.0",
     "zustand": "^4.5.0"
   },
   "devDependencies": {

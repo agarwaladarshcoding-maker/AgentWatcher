@@ -1,68 +1,146 @@
-import { useEffect, useState } from "react";
 import { Modal } from "./Modal";
-import { DEFAULT_SETTINGS, type AppSettings } from "../../../shared/ipc";
-
-interface SettingsModalProps {
-  onClose: () => void;
-}
+import { useSettings } from "../store/settings";
+import { useBrowserAgents } from "../store/browserAgents";
 
 /**
- * Settings (Phase 4): the default Allow/Deny bytes written to a session's stdin.
- * A trailing newline is added automatically, so just type e.g. `y` / `n` (or
- * `yes`). These override the per-profile defaults for all sessions.
+ * Settings: notification + sound toggles and configurable Allow/Deny responses
+ * (architecture doc §8 Phase 4 / §16.6). The response fields override the agent
+ * profile's defaults; \n / \r are interpreted as newline / carriage-return.
  */
-export function SettingsModal({ onClose }: SettingsModalProps): JSX.Element {
-  const [settings, setSettings] = useState<AppSettings | null>(null);
+function decode(s: string): string {
+  return s.replace(/\\n/g, "\n").replace(/\\r/g, "\r").replace(/\\t/g, "\t");
+}
+function encode(s: string): string {
+  return s.replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
+}
 
-  useEffect(() => {
-    let active = true;
-    window.agentwatch
-      .getSettings()
-      .then((s) => active && setSettings(s))
-      .catch(() => active && setSettings({ ...DEFAULT_SETTINGS }));
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  const strip = (v: string): string => v.replace(/\n$/, "");
-
-  const save = async (patch: Partial<AppSettings>): Promise<void> => {
-    const next = await window.agentwatch.setSettings(patch);
-    setSettings(next);
-  };
+export function SettingsModal({
+  onClose,
+}: {
+  onClose: () => void;
+}): JSX.Element {
+  const settings = useSettings((s) => s.settings);
+  const update = useSettings((s) => s.update);
+  const bridgeConnected = useBrowserAgents((s) => s.connected);
+  const pairingCode = useBrowserAgents((s) => s.pairingCode);
 
   return (
-    <Modal title="Settings" onClose={onClose}>
-      {!settings ? (
-        <p className="modal-empty">Loading…</p>
-      ) : (
-        <div className="settings-form">
-          <p className="settings-note">
-            Default responses written to an agent&apos;s input when you click
-            Allow / Deny. A newline is added automatically.
-          </p>
-          <label className="settings-row">
-            <span>Allow sends</span>
-            <input
-              className="settings-input"
-              value={strip(settings.defaultAllow)}
-              onChange={(e) => save({ defaultAllow: e.target.value })}
-              placeholder="y"
-            />
-          </label>
-          <label className="settings-row">
-            <span>Deny sends</span>
-            <input
-              className="settings-input"
-              value={strip(settings.defaultDeny)}
-              onChange={(e) => save({ defaultDeny: e.target.value })}
-              placeholder="n"
-            />
-          </label>
-          <p className="settings-saved">Changes save automatically.</p>
+    <Modal
+      title="Settings"
+      onClose={onClose}
+      small
+      actions={
+        <button className="btn btn-allow" onClick={onClose}>
+          Done
+        </button>
+      }
+    >
+      <div className="field">
+        <label className="field-toggle">
+          <input
+            type="checkbox"
+            checked={settings.notifications}
+            onChange={(e) => update({ notifications: e.target.checked })}
+          />
+          Show OS notifications for permission prompts
+        </label>
+        <p className="field-hint">
+          Click a notification to jump to the agent; on macOS you can Allow/Deny
+          or type a reply right from it.
+        </p>
+      </div>
+
+      <div className="field">
+        <label className="field-toggle">
+          <input
+            type="checkbox"
+            checked={settings.notifyOnComplete}
+            disabled={!settings.notifications}
+            onChange={(e) => update({ notifyOnComplete: e.target.checked })}
+          />
+          Also notify me when an agent finishes
+        </label>
+        <p className="field-hint">
+          A “✓ finished” toast when a session ends — handy when you launched it
+          with <code>--nodashboard</code> and are working elsewhere.
+        </p>
+      </div>
+
+      <div className="field">
+        <label className="field-toggle">
+          <input
+            type="checkbox"
+            checked={settings.sound}
+            onChange={(e) => update({ sound: e.target.checked })}
+          />
+          Play a chime when a permission lands
+        </label>
+      </div>
+
+      <div className="field">
+        <button
+          className="btn"
+          onClick={() => window.agentwatch.sendDebugTestNotification()}
+        >
+          Send test notification
+        </button>
+      </div>
+
+      <div className="field">
+        <label className="field-label" htmlFor="set-allow">
+          Allow sends (blank = agent default, usually <code>y</code>)
+        </label>
+        <input
+          id="set-allow"
+          className="field-input"
+          value={encode(settings.allowInput)}
+          placeholder="\n  (e.g. y\\n)"
+          onChange={(e) => update({ allowInput: decode(e.target.value) })}
+        />
+      </div>
+
+      <div className="field">
+        <label className="field-label" htmlFor="set-deny">
+          Deny sends (blank = agent default, usually <code>n</code>)
+        </label>
+        <input
+          id="set-deny"
+          className="field-input"
+          value={encode(settings.denyInput)}
+          placeholder="\n  (e.g. n\\n)"
+          onChange={(e) => update({ denyInput: decode(e.target.value) })}
+        />
+      </div>
+
+      <div className="field">
+        <label className="field-label">Chrome extension (AgentWatch Web)</label>
+        <p className="field-hint">
+          Watch browser agents (Claude, ChatGPT, Gemini…) and see them in the
+          Chrome section here. Load <code>agentwatch-web/dist</code> unpacked at{" "}
+          <code>chrome://extensions</code> (Developer mode → Load unpacked), open
+          the popup, and enter the pairing code below to bond it with this app.
+          The extension also works fully standalone.
+        </p>
+        <div className="bridge-pairing">
+          <span
+            className={`bridge-chip ${bridgeConnected ? "on" : ""}`}
+            role="status"
+          >
+            {bridgeConnected ? "● Connected" : "○ Not connected"}
+          </span>
+          <span className="bridge-code-label">Pairing code:</span>
+          <code className="bridge-code">{pairingCode || "starting…"}</code>
+          <button
+            className="btn"
+            disabled={!pairingCode}
+            onClick={() => {
+              if (pairingCode) void navigator.clipboard?.writeText(pairingCode);
+            }}
+          >
+            Copy
+          </button>
         </div>
-      )}
+      </div>
     </Modal>
   );
 }

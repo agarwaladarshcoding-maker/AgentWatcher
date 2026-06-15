@@ -5,10 +5,14 @@
  */
 import type {
   AgentState,
+  AppSettings,
+  BrowserAgentState,
   FeedEvent,
-  SessionInfo,
   PendingPermission,
-  Verdict,
+  PermissionAction,
+  RespondedPermission,
+  SessionInfo,
+  TrackedTab,
 } from "./types";
 
 /** Channel names — the complete main<->renderer surface. */
@@ -27,26 +31,65 @@ export const IPC = {
   sessionSize: "session:size",
   /** main -> renderer (event): a session's process ended. */
   sessionExit: "session:exit",
-  /** main -> renderer (event): a permission prompt is pending for a session. */
-  sessionPermission: "session:permission",
-  /** main -> renderer (event): a permission was resolved (Allowed/Denied). */
-  sessionVerdict: "session:verdict",
   /** renderer -> main (event): keystrokes / paste -> a session's PTY stdin. */
   sessionInput: "session:input",
   /** renderer -> main (event): the GUI view's size for a session (size negotiation). */
   sessionResize: "session:resize",
-  /** renderer -> main (event): answer a pending permission (Allow/Deny). */
-  sessionRespond: "session:respond",
-  /** renderer -> main (event): rename a session's label. */
-  sessionRename: "session:rename",
-  /** renderer -> main (event): kill a session. */
+  /** renderer -> main (event): kill a session (terminate the process). */
   sessionClose: "session:close",
-  /** renderer -> main (invoke): query the audit log / session history. */
+  /** renderer -> main (event): remove an already-ended session from the list. */
+  sessionRemove: "session:remove",
+  /** renderer -> main (invoke): spawn a brand-new session from the GUI. */
+  sessionSpawn: "session:spawn",
+  /** main -> renderer (event): focus/switch to a session (e.g. notification click). */
+  sessionFocus: "session:focus",
+
+  // ---- Phase 3: permission control plane ----
+  /** main -> renderer (event): a new pending permission for a session. */
+  permissionPending: "permission:pending",
+  /** main -> renderer (event): a pending permission was cleared (answered elsewhere). */
+  permissionResolved: "permission:resolved",
+  /** main -> renderer (event): a permission moved to the Responded/audit list. */
+  permissionResponded: "permission:responded",
+  /** renderer -> main (event): answer a pending permission (Allow/Deny/choice/custom). */
+  permissionRespond: "permission:respond",
+
+  /** renderer -> main (event): user settings changed. */
+  settingsUpdate: "settings:update",
+
+  // ---- Phase 4: persistence / audit log ----
+  /** renderer -> main (invoke): recent sessions from the SQLite audit log. */
   historyQuery: "history:query",
-  /** renderer -> main (invoke): read app settings. */
-  settingsGet: "settings:get",
-  /** renderer -> main (invoke): persist app settings; returns the saved value. */
-  settingsSet: "settings:set",
+  /** renderer -> main (invoke): the full event + verdict timeline of one session. */
+  historyDetail: "history:detail",
+  /** renderer -> main (invoke): wipe the persisted history. */
+  historyClear: "history:clear",
+  /** renderer -> main (invoke): export one session's timeline to a file. */
+  historyExport: "history:export",
+
+  /** renderer -> main (event): trigger a fake notification for testing. */
+  debugTestNotification: "debug:test-notification",
+
+  /** renderer -> main (invoke): resolves once the main process is fully ready. */
+  appReady: "app:ready",
+  /** renderer -> main (invoke): open a native folder picker; returns a path or null. */
+  dialogPickDirectory: "dialog:pick-directory",
+
+  // ---- Browser bonding (spec: browser-bonding §B4) ----
+  /** main -> renderer (event): the full set of watched Chrome tabs + connected flag. */
+  browserList: "browser:list",
+  /** main -> renderer (event): a watched tab's state changed. */
+  browserState: "browser:state",
+  /** main -> renderer (event): a watched tab completed (snippet/output). */
+  browserCompleted: "browser:completed",
+  /** main -> renderer (event): bridge connection status + pairing code. */
+  bridgeStatus: "bridge:status",
+  /** renderer -> main (event): jump to a watched tab (focus + scroll). */
+  browserFocus: "browser:focus",
+  /** renderer -> main (event): opt-in reply injected into a tab's composer. */
+  browserReply: "browser:reply",
+  /** renderer -> main (invoke): current bridge status (connected, port, pairing code). */
+  bridgeStatusGet: "bridge:status-get",
 } as const;
 
 /** Terminal dimensions in character cells. */
@@ -94,58 +137,76 @@ export interface SessionResizeMsg {
   cols: number;
   rows: number;
 }
-export interface SessionRespondMsg {
-  id: string;
-  permissionId: string;
-  decision: "allow" | "deny";
-}
-export interface SessionRenameMsg {
-  id: string;
-  name: string;
+
+/** renderer -> main (invoke): create a new GUI-owned session. */
+export interface SessionSpawnMsg {
+  command: string;
+  args: string[];
+  cwd?: string;
+  cols: number;
+  rows: number;
 }
 
-/** Permission / verdict messages. */
-export interface SessionPermissionMsg {
+/** main -> renderer: a permission is now pending for a session. */
+export interface PermissionPendingMsg {
   id: string;
   permission: PendingPermission;
 }
-export interface SessionVerdictMsg {
+/** main -> renderer: a pending permission was cleared without an explicit verdict. */
+export interface PermissionResolvedMsg {
   id: string;
-  verdict: Verdict;
+  permissionId: string;
+}
+/** main -> renderer: a permission has a recorded verdict. */
+export interface PermissionRespondedMsg {
+  id: string;
+  responded: RespondedPermission;
+}
+/** renderer -> main: answer a pending permission. */
+export interface PermissionRespondMsg {
+  id: string;
+  permissionId: string;
+  action: PermissionAction;
 }
 
-/** Audit log / history (Phase 4). */
-export interface HistoryFilter {
-  limit?: number;
+/** ── Browser bonding payloads ─────────────────────────────────────────── */
+/** main -> renderer: full watched-tab snapshot + whether the extension is connected. */
+export interface BrowserListMsg {
+  connected: boolean;
+  tabs: TrackedTab[];
 }
-export interface HistoryRow {
-  rowId: number;
-  sessionId: string;
-  command: string;
+/** main -> renderer: a single tab's state change. */
+export interface BrowserStateMsg {
+  tabId: number;
+  state: BrowserAgentState;
+}
+/** main -> renderer: a tab completed. */
+export interface BrowserCompletedMsg {
+  tabId: number;
   label: string;
-  profile: string;
-  pid: number;
-  startedAt: number;
-  endedAt: number | null;
-  exitCode: number | null;
-  events: number;
-  verdicts: number;
+  snippet?: string;
+  output?: string;
+}
+/** main -> renderer: bridge connection status + the pairing code to show the user. */
+export interface BridgeStatusMsg {
+  connected: boolean;
+  port: number | null;
+  pairingCode: string;
+}
+/** renderer -> main: opt-in reply injected into a watched tab's composer. */
+export interface BrowserReplyMsg {
+  tabId: number;
+  text: string;
 }
 
-/** Persisted app settings (Phase 4). */
-export interface AppSettings {
-  /** Bytes written to stdin on Allow (default "y\n"). */
-  defaultAllow: string;
-  /** Bytes written to stdin on Deny (default "n\n"). */
-  defaultDeny: string;
-  /** Persist a full transcript per session to the audit log (default false). */
-  persistTranscript: boolean;
-}
-
-export const DEFAULT_SETTINGS: AppSettings = {
-  defaultAllow: "y\n",
-  defaultDeny: "n\n",
-  persistTranscript: false,
+export type {
+  AgentState,
+  AppSettings,
+  BrowserAgentState,
+  FeedEvent,
+  PendingPermission,
+  PermissionAction,
+  RespondedPermission,
+  SessionInfo,
+  TrackedTab,
 };
-
-export type { AgentState, FeedEvent, SessionInfo, PendingPermission, Verdict };

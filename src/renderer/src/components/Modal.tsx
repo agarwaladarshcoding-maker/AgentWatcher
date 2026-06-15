@@ -1,21 +1,42 @@
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 
-interface ModalProps {
+/**
+ * A small, focus-friendly modal shell used by New Terminal / Settings / History
+ * / confirmation dialogs. Closes on Escape and on overlay click.
+ */
+export function Modal({
+  title,
+  onClose,
+  children,
+  actions,
+  small,
+}: {
   title: string;
   onClose: () => void;
   children: ReactNode;
-}
+  actions?: ReactNode;
+  small?: boolean;
+}): JSX.Element {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
-/** A simple centered modal with a backdrop. */
-export function Modal({ title, onClose, children }: ModalProps): JSX.Element {
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div
+      className="modal-overlay"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
       <div
-        className="modal"
+        className={`modal ${small ? "small" : ""}`}
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        onClick={(e) => e.stopPropagation()}
       >
         <header className="modal-head">
           <span className="modal-title">{title}</span>
@@ -23,7 +44,8 @@ export function Modal({ title, onClose, children }: ModalProps): JSX.Element {
             ×
           </button>
         </header>
-        <div className="modal-content">{children}</div>
+        <div className="modal-body">{children}</div>
+        {actions && <div className="modal-actions">{actions}</div>}
       </div>
     </div>
   );

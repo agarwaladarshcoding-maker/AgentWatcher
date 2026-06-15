@@ -1,41 +1,85 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSessions } from "./store/sessions";
+import { useSettings } from "./store/settings";
+import { useBrowserAgents } from "./store/browserAgents";
 import { TerminalManager } from "./terminal/manager";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalsLayer } from "./components/TerminalsLayer";
 import { EventFeed } from "./components/EventFeed";
 import { NotificationPanel } from "./components/NotificationPanel";
-import { HistoryModal } from "./components/HistoryModal";
+import { ChromeSection } from "./components/ChromeSection";
+import { NewTerminalModal } from "./components/NewTerminalModal";
 import { SettingsModal } from "./components/SettingsModal";
+import { HistoryModal } from "./components/HistoryModal";
 import type { AgentState } from "../../shared/types";
 
 const STATE_LABEL: Record<AgentState, string> = {
   idle: "Idle",
-  reading: "Reading",
-  thinking: "Thinking",
-  writing: "Writing",
+  working: "Working",
   waiting: "Waiting",
-  done: "Done",
+  completed: "Completed",
 };
 
+/** A soft two-note chime via WebAudio (no asset needed). */
+function playChime(): void {
+  try {
+    const Ctx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext })
+        .webkitAudioContext;
+    const ctx = new Ctx();
+    const now = ctx.currentTime;
+    [880, 1320].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = freq;
+      osc.type = "sine";
+      const t = now + i * 0.12;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.12, t + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.2);
+    });
+    setTimeout(() => void ctx.close(), 600);
+  } catch {
+    /* audio not available */
+  }
+}
+
+type ModalKind = "newTerminal" | "settings" | "history" | null;
+
 /**
- * The one window for all agents: sidebar (list + search + switch) · the active
- * agent's mirror · its event feed. Terminal output is routed straight into the
- * imperative TerminalManager and never enters React state (§18).
+ * The one window for all agents: sidebar (list + search + switch + new) · the
+ * active agent's mirror · its event feed + permission control plane. Terminal
+ * output is routed straight into the imperative TerminalManager and never
+ * enters React state (§18).
  */
 function App(): JSX.Element {
   const sessions = useSessions((s) => s.sessions);
   const activeId = useSessions((s) => s.activeId);
   const states = useSessions((s) => s.states);
+  const pending = useSessions((s) => s.pending);
   const setSessions = useSessions((s) => s.setSessions);
+  const setActive = useSessions((s) => s.setActive);
   const applyState = useSessions((s) => s.applyState);
   const addEvent = useSessions((s) => s.addEvent);
   const applyExit = useSessions((s) => s.applyExit);
-  const addPermission = useSessions((s) => s.addPermission);
-  const resolvePermission = useSessions((s) => s.resolvePermission);
-  const pending = useSessions((s) => s.pending);
+  const addPending = useSessions((s) => s.addPending);
+  const removePending = useSessions((s) => s.removePending);
+  const addResponded = useSessions((s) => s.addResponded);
 
-  const [modal, setModal] = useState<"history" | "settings" | null>(null);
+  const syncSettings = useSettings((s) => s.sync);
+  const soundEnabled = useSettings((s) => s.settings.sound);
+
+  const setBridgeStatus = useBrowserAgents((s) => s.setBridgeStatus);
+  const setBrowserSnapshot = useBrowserAgents((s) => s.setSnapshot);
+  const applyBrowserState = useBrowserAgents((s) => s.applyState);
+  const applyBrowserCompleted = useBrowserAgents((s) => s.applyCompleted);
+
+  const [modal, setModal] = useState<ModalKind>(null);
+  const [booting, setBooting] = useState(true);
 
   const managerRef = useRef<TerminalManager | null>(null);
   if (!managerRef.current) {
@@ -45,13 +89,36 @@ function App(): JSX.Element {
   }
   const manager = managerRef.current;
 
+  // Keep the latest sound preference in a ref so the stable subscription can read it.
+  const soundRef = useRef(soundEnabled);
+  soundRef.current = soundEnabled;
+
   useEffect(() => {
+    syncSettings();
+
     window.agentwatch
       .getSessions()
       .then((list) => setSessions(list))
       .catch(() => {
         /* none yet */
       });
+
+    // Hold the loading screen until the backend confirms it is fully wired up
+    // (PTYs, socket server, audit store). Buttons stay disabled until then.
+    let cancelled = false;
+    const liftWhenReady = async (): Promise<void> => {
+      try {
+        await window.agentwatch.appReady();
+      } catch {
+        /* even if the probe fails, don't trap the user behind the splash */
+      }
+      if (!cancelled) setBooting(false);
+    };
+    void liftWhenReady();
+    // Safety net: never trap the user behind the splash if something stalls.
+    const failsafe = window.setTimeout(() => {
+      if (!cancelled) setBooting(false);
+    }, 4000);
 
     const offSessions = window.agentwatch.onSessions((list) =>
       setSessions(list),
@@ -70,32 +137,89 @@ function App(): JSX.Element {
         `\r\n\x1b[2m── session ended (code ${m.info.code}${sig}) ──\x1b[0m\r\n`,
       );
     });
-    const offPermission = window.agentwatch.onPermission((m) =>
-      addPermission(m.id, m.permission),
+
+    const offPending = window.agentwatch.onPermissionPending((m) => {
+      addPending(m.id, m.permission);
+      if (soundRef.current) playChime();
+    });
+    const offResolved = window.agentwatch.onPermissionResolved((m) =>
+      removePending(m.id, m.permissionId),
     );
-    const offVerdict = window.agentwatch.onVerdict((m) =>
-      resolvePermission(m.id, m.verdict),
+    const offResponded = window.agentwatch.onPermissionResponded((m) => {
+      removePending(m.id, m.responded.id);
+      addResponded(m.id, m.responded);
+    });
+    const offFocus = window.agentwatch.onFocusSession((id) => setActive(id));
+
+    // ── Browser bonding subscriptions (Chrome section) ──
+    window.agentwatch
+      .getBridgeStatus()
+      .then((s) =>
+        setBridgeStatus({
+          connected: s.connected,
+          pairingCode: s.pairingCode,
+          port: s.port,
+        }),
+      )
+      .catch(() => {
+        /* bridge may be unavailable; section stays hidden */
+      });
+    const offBridgeStatus = window.agentwatch.onBridgeStatus((s) =>
+      setBridgeStatus({
+        connected: s.connected,
+        pairingCode: s.pairingCode,
+        port: s.port,
+      }),
+    );
+    const offBrowserList = window.agentwatch.onBrowserList((m) =>
+      setBrowserSnapshot(m.connected, m.tabs),
+    );
+    const offBrowserState = window.agentwatch.onBrowserState((m) =>
+      applyBrowserState(m.tabId, m.state),
+    );
+    const offBrowserCompleted = window.agentwatch.onBrowserCompleted((m) =>
+      applyBrowserCompleted(m.tabId, m.label, m.snippet, m.output),
     );
 
     return () => {
+      cancelled = true;
+      window.clearTimeout(failsafe);
       offSessions();
       offData();
       offSize();
       offState();
       offEvent();
       offExit();
-      offPermission();
-      offVerdict();
+      offPending();
+      offResolved();
+      offResponded();
+      offFocus();
+      offBridgeStatus();
+      offBrowserList();
+      offBrowserState();
+      offBrowserCompleted();
     };
   }, [
     manager,
+    syncSettings,
     setSessions,
+    setActive,
     applyState,
     addEvent,
     applyExit,
-    addPermission,
-    resolvePermission,
+    addPending,
+    removePending,
+    addResponded,
+    setBridgeStatus,
+    setBrowserSnapshot,
+    applyBrowserState,
+    applyBrowserCompleted,
   ]);
+
+  // Crash-safety: dispose terminals whose session was removed/dismissed.
+  useEffect(() => {
+    manager.pruneExcept(new Set(sessions.map((s) => s.id)));
+  }, [sessions, manager]);
 
   useEffect(() => () => manager.disposeAll(), [manager]);
 
@@ -108,12 +232,12 @@ function App(): JSX.Element {
   const active = sessions.find((s) => s.id === activeId) ?? null;
   const activeState: AgentState = active
     ? active.ended
-      ? "done"
+      ? "completed"
       : (states[active.id] ?? active.state)
     : "idle";
 
   const running = sessions.filter((s) => !s.ended).length;
-  const pendingCount = Object.values(pending).reduce(
+  const totalPending = Object.values(pending).reduce(
     (sum, list) => sum + list.length,
     0,
   );
@@ -123,43 +247,71 @@ function App(): JSX.Element {
       <header className="topbar">
         <span className="logo-dot" aria-hidden="true" />
         <span className="app-name">AgentWatch</span>
+        <span className="topbar-spacer" />
         <span className="status-badge live" role="status">
           {running} running
         </span>
-        {pendingCount > 0 && (
-          <span className="status-badge waiting">{pendingCount} pending</span>
+        {totalPending > 0 && (
+          <span className="status-badge pending">{totalPending} pending</span>
         )}
-        <button className="topbar-btn" onClick={() => setModal("history")}>
+        <button
+          className="topbar-btn primary"
+          onClick={() => setModal("newTerminal")}
+          disabled={booting}
+        >
+          + New terminal
+        </button>
+        <button
+          className="topbar-btn"
+          onClick={() => setModal("history")}
+          disabled={booting}
+        >
           History
         </button>
-        <button className="topbar-btn" onClick={() => setModal("settings")}>
+        <button
+          className="topbar-btn"
+          onClick={() => setModal("settings")}
+          disabled={booting}
+        >
           Settings
         </button>
       </header>
 
       <div className="layout">
-        <Sidebar />
+        <Sidebar onNewTerminal={() => setModal("newTerminal")} />
 
         <main className="center-col">
           <div className="agent-header">
             {active ? (
               <>
                 <span
-                  className={`state-dot state-${activeState} ${!active.ended && activeState !== "idle" ? "pulse" : ""}`}
+                  className={`state-dot state-${activeState} ${!active.ended && activeState === "working" ? "pulse" : ""}`}
                   aria-hidden="true"
                 />
-                <span className="agent-name">{active.label}</span>
+                <span className="agent-name">{active.commandLine}</span>
                 <span className="agent-pid">pid {active.pid}</span>
-                {active.nativeAttached && (
+                {active.nativeAttached ? (
                   <span
                     className="mirror-chip"
                     title="Mirrored to the native terminal too"
                   >
                     native + GUI
                   </span>
+                ) : (
+                  <span
+                    className="mirror-chip gui"
+                    title="Started from the AgentWatch GUI"
+                  >
+                    GUI
+                  </span>
+                )}
+                {active.cwd && (
+                  <span className="agent-cwd" title={active.cwd}>
+                    {active.cwd}
+                  </span>
                 )}
                 <span className={`state-pill state-${activeState}`}>
-                  {active.ended ? "Done" : STATE_LABEL[activeState]}
+                  {active.ended ? "Completed" : STATE_LABEL[activeState]}
                 </span>
               </>
             ) : (
@@ -167,17 +319,35 @@ function App(): JSX.Element {
             )}
           </div>
 
-          <TerminalsLayer manager={manager} onGuiSize={onGuiSize} />
+          <TerminalsLayer
+            manager={manager}
+            onGuiSize={onGuiSize}
+            onNewTerminal={() => setModal("newTerminal")}
+          />
         </main>
 
         <aside className="right-col">
           <EventFeed />
+          <ChromeSection />
           <NotificationPanel />
         </aside>
       </div>
 
-      {modal === "history" && <HistoryModal onClose={() => setModal(null)} />}
+      {modal === "newTerminal" && (
+        <NewTerminalModal onClose={() => setModal(null)} />
+      )}
       {modal === "settings" && <SettingsModal onClose={() => setModal(null)} />}
+      {modal === "history" && <HistoryModal onClose={() => setModal(null)} />}
+
+      {booting && (
+        <div className="boot-overlay" role="status" aria-live="polite">
+          <div className="boot-card">
+            <span className="boot-spinner" aria-hidden="true" />
+            <span className="boot-title">Starting AgentWatch…</span>
+            <span className="boot-sub">Wiring up the backend and terminals</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

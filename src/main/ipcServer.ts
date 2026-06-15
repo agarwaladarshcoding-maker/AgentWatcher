@@ -29,7 +29,16 @@ export class IpcServer {
   private readonly clients = new Set<Client>();
   private readonly bySession = new Map<string, Set<Client>>();
 
-  constructor(private readonly sessions: SessionManager) {}
+  /**
+   * @param sessions       the shared session manager (owns the PTYs)
+   * @param onEnsureWindow  called when a relay asks for the GUI dashboard, so a
+   *                        headless (--nodashboard) primary can still pop the
+   *                        window open when a normal `agentwatch <cli>` arrives.
+   */
+  constructor(
+    private readonly sessions: SessionManager,
+    private readonly onEnsureWindow?: () => void,
+  ) {}
 
   listen(): void {
     const p = socketPath();
@@ -76,6 +85,10 @@ export class IpcServer {
         } catch {
           return;
         }
+        // A relay that wants the dashboard makes a headless primary pop its
+        // window (so `agentwatch gemini` shows the GUI even if the first launch
+        // was `--nodashboard`).
+        if (p.dashboard !== false) this.onEnsureWindow?.();
         const info = this.sessions.create(
           {
             command: p.command,
